@@ -1,0 +1,55 @@
+{
+  "repository": "https://github.com/crmne/spotifast.git",
+  "base": "dd2d5e34e66d4e01e31e595a3022a1de808b449a",
+  "tested_platform": "Linux Debian 13",
+  "captures": "Native app on X11/Xvfb with software OpenGL; demo mode and cached placeholder artwork",
+  "features": [
+    {
+      "feature": "play-next",
+      "branch": "feat/play-next",
+      "commit": "7fb47304ae19adb3e8bb3d2563abb700941a8b85",
+      "rust_checks_exit_codes": {
+        "fmt": 0,
+        "clippy-default": 0,
+        "clippy-all-features": 0,
+        "tests-default": 0,
+        "tests-all-features": 0,
+        "doc-tests": 0,
+        "rustdoc": 0
+      },
+      "launchers": "passed",
+      "release_names": "passed",
+      "flatpak_metainfo": "passed",
+      "translations": "passed",
+      "jekyll": "passed",
+      "native_demo_captures": 24,
+      "patch_sha256": "bd1406c5c1c9cbd415615b17ed83b1729120567920a2a5265e214cb93ee6342b"
+    },
+    {
+      "feature": "enlarged-covers",
+      "branch": "feat/enlarged-covers",
+      "commit": "a3167f3317803fa24858a740459a17b219d82515",
+      "rust_checks_exit_codes": {
+        "fmt": 0,
+        "clippy-default": 0,
+        "clippy-all-features": 0,
+        "tests-default": 0,
+        "tests-all-features": 0,
+        "doc-tests": 0,
+        "rustdoc": 0
+      },
+      "launchers": "passed",
+      "release_names": "passed",
+      "flatpak_metainfo": "passed",
+      "translations": "passed",
+      "jekyll": "passed",
+      "native_demo_captures": 40,
+      "patch_sha256": "18445808871aa71170213ea9ab4445a4e5cda823350d31f60aeab1a1bf667602"
+    }
+  ],
+  "remaining_checks": [
+    "macOS",
+    "Windows",
+    "live Spotify playback"
+  ]
+}
