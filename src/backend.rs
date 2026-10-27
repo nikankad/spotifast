@@ -706,6 +706,10 @@ pub enum Command {
         query: crate::sample_connections::Query,
     },
     CancelSampleConnections,
+    SamplePicture {
+        request: u64,
+        target: crate::sample_connections::images::Target,
+    },
     OpenThemesFolder,
     /// Read or change the login registration, off the UI thread: it reads
     /// and writes a file, the registry or D-Bus, and the Flatpak portal may
@@ -970,6 +974,11 @@ pub struct LyricsRequest {
 }
 
 pub enum Event {
+    SamplePicture {
+        request: u64,
+        target: crate::sample_connections::images::Target,
+        picture: Option<crate::sample_connections::images::Picture>,
+    },
     SampleConnections {
         request: u64,
         result: Result<crate::sample_connections::Found, String>,
@@ -1843,6 +1852,7 @@ struct Worker {
     http: Http,
     sample_connections: Arc<crate::sample_connections::Provider>,
     sample_task: Option<tokio::task::JoinHandle<()>>,
+    sample_images: tokio::task::JoinSet<()>,
     /// Friends' names and avatars and their playlists' names, kept between
     /// Friend activity polls.
     friend_names: Arc<tokio::sync::Mutex<session_reads::FriendNames>>,
@@ -1975,6 +1985,7 @@ impl Worker {
             sample_connections: Arc::new(crate::sample_connections::Provider::new(http.clone())),
             http,
             sample_task: None,
+            sample_images: tokio::task::JoinSet::new(),
             friend_names: Arc::default(),
             art,
             events,
@@ -2652,6 +2663,22 @@ impl Worker {
                     }));
                 }
                 Command::CancelSampleConnections => self.cancel_sample_connections(),
+                Command::SamplePicture { request, target } => {
+                    while self.sample_images.try_join_next().is_some() {}
+                    let provider = Arc::clone(&self.sample_connections);
+                    let events = self.events.clone();
+                    let waker = self.waker.clone();
+                    self.sample_images.spawn(async move {
+                        // Missing artwork never replaces the recording's metadata with an error.
+                        let picture = provider.picture(&target).await.ok().flatten();
+                        let _ = events.send(Event::SamplePicture {
+                            request,
+                            target,
+                            picture,
+                        });
+                        waker.wake();
+                    });
+                }
                 Command::Lyrics(request) => self.fetch_lyrics(*request),
                 Command::Rootlist => self.fetch_rootlist(),
                 Command::RootlistFinished { generation, result } => {
@@ -4590,6 +4617,7 @@ impl Worker {
     }
 
     fn cancel_sample_connections(&mut self) {
+        self.sample_images.abort_all();
         if let Some(task) = self.sample_task.take() {
             task.abort();
         }

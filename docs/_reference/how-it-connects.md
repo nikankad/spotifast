@@ -283,7 +283,7 @@ out, or a reconnection that gives up stops it.
 ## Sample connections
 
 `sample_connections::Provider` uses the shared, credential-free `Http` handle
-for on-demand GETs to `https://musicbrainz.org/ws/2/recording/`. The card below
+for on-demand GETs to `https://musicbrainz.org/ws/2/`. The card below
 Now playing and the song context menu open a native view immediately. Only
 opening that view or following a recording asks the provider for metadata.
 It searches by ISRC when available, falling back to an escaped artist/title
@@ -298,8 +298,28 @@ Recording relationships with type ID
 `9efd9ce9-e702-448b-8e76-641515e8fe62` populate the two sample directions.
 Remixes, covers, and interpolations are not presented as samples. Work credits
 are read only from the performed work, not from works it is based on. Artist
-identities merge contributor roles. Contributor circles use initials and link
-to MusicBrainz; this provider has no artist portraits.
+identities merge contributor roles. Contributor circles link to MusicBrainz.
+
+Visible images emit actions after drawing. Recording artwork is resolved by
+browsing up to 100 releases containing that exact MusicBrainz recording, then
+choosing one with front art, preferring official releases and original albums
+over compilations. Cover Art Archive supplies a 250-pixel front image for the
+release ID, with redirects to Internet Archive storage. A Spotify song's own
+available cover takes precedence in the header.
+
+Portraits use the contributor's exact MusicBrainz artist ID and its linked
+Spotify artist URL. Spotify's documented `https://open.spotify.com/oembed`
+link-preview API supplies an available thumbnail without a Web API grant.
+Only a known Spotify artist-photo image ID is accepted; album covers that
+stand in for an artist photo are rejected. Embed HTML is never rendered. If
+that has no photo, the artist's Wikidata URL relationship is used. The linked
+entity's non-deprecated P18 claim supplies a Commons filename, preferring a
+preferred-rank claim. The Commons imageinfo API supplies a thumbnail, author,
+license and file description page. Only HTTPS Wikimedia
+image hosts are accepted. Photo credits and source links are available on hover;
+HTML metadata is reduced to plain text. No image is chosen by a name search.
+An unavailable portrait or cover leaves the placeholder visible without failing
+the view.
 
 Requests run on the backend runtime, use the configured proxy, carry a
 contactable Spotifast User-Agent, and carry no Spotify authorization. A shared
@@ -307,9 +327,16 @@ mutex spaces requests at least 1.1 seconds apart, including cancelled tasks.
 A 429 or 503 preserves Retry-After (seconds or HTTP date), with a one-minute
 fallback, and shows a retryable error without an automatic retry loop. Each
 request times out after 20 seconds and response bodies are capped at 2 MiB.
-The provider keeps at most 32 successful responses in memory for one hour.
+The same serialized, bounded transport and in-memory cache handle image metadata
+from MusicBrainz, `open.spotify.com`, `www.wikidata.org` and
+`commons.wikimedia.org`. Visible targets are resolved once per view, including
+missing images. Image files use the
+existing asynchronous artwork loader, disk cache and memory budget. All follow
+the configured proxy without credentials or new API keys. The provider keeps
+at most 32 successful metadata responses in memory for one hour.
 There is no new state file or setting. Closing the view, choosing another
-recording, or signing out cancels its task. Request serials reject late results.
+recording, or signing out cancels its metadata and image lookup tasks. Request
+serials reject late results.
 **Find on Spotify** opens an ordinary in-app search, so a MusicBrainz result
 never automatically plays a potentially different Spotify recording.
 

@@ -5,6 +5,7 @@ use egui::{CornerRadius, Frame, Margin, Stroke};
 use crate::app::App;
 use crate::i18n::gettext;
 use crate::model::{Action, Loadable};
+use crate::sample_connections::images::Target;
 use crate::sample_connections::{Found, Query, Recording, View};
 use crate::theme;
 
@@ -35,7 +36,13 @@ pub(super) fn show(app: &mut App, ctx: &egui::Context, view: &View) {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 let cover = match &view.query { Query::Song { cover, .. } => cover.as_deref(), _ => None };
-                super::widgets::cover(ui, &palette, cover, 64.0, 6.0, theme::Icon::Music);
+                if let Some(cover) = cover {
+                    super::widgets::cover(ui, &palette, Some(cover), 64.0, 6.0, theme::Icon::Music);
+                } else if let Loadable::Loaded(Found::Connections(c)) = &view.result {
+                    picture(app, ui, view, Target::Recording(c.recording.id.clone()), 64.0, false);
+                } else {
+                    super::widgets::cover(ui, &palette, None, 64.0, 6.0, theme::Icon::Music);
+                }
                 ui.vertical(|ui| {
                     ui.add_space(6.0);
                     label(ui, view.query.title(), 20.0, palette.text);
@@ -69,7 +76,7 @@ pub(super) fn show(app: &mut App, ctx: &egui::Context, view: &View) {
                             label(ui, &gettext(locale, "Choose the recording that matches your song. Edits and remixes can have different samples."), 14.0, palette.secondary);
                             ui.add_space(12.0);
                             for recording in candidates {
-                                row(app, ui, recording, true);
+                                row(app, ui, view, recording, true);
                             }
                         }
                     }
@@ -78,7 +85,7 @@ pub(super) fn show(app: &mut App, ctx: &egui::Context, view: &View) {
                             label(ui, &connections.recording.disambiguation, 13.0, palette.secondary);
                             ui.add_space(8.0);
                         }
-                        contributors(app, ui, &connections.contributors);
+                        contributors(app, ui, view, &connections.contributors);
                         for (heading, recordings) in [
                             (gettext(locale, "Samples from"), &connections.samples_from),
                             (gettext(locale, "Sampled by"), &connections.sampled_by),
@@ -90,7 +97,7 @@ pub(super) fn show(app: &mut App, ctx: &egui::Context, view: &View) {
                                 ui.add_space(12.0);
                             }
                             for recording in recordings {
-                                row(app, ui, recording, false);
+                                row(app, ui, view, recording, false);
                             }
                             ui.add_space(12.0);
                         }
@@ -107,12 +114,19 @@ pub(super) fn show(app: &mut App, ctx: &egui::Context, view: &View) {
     }
 }
 
-fn row(app: &mut App, ui: &mut egui::Ui, recording: &Recording, candidate: bool) {
+fn row(app: &mut App, ui: &mut egui::Ui, view: &View, recording: &Recording, candidate: bool) {
     let palette = app.palette;
     let locale = app.locale;
     ui.push_id(&recording.id, |ui| {
         ui.horizontal(|ui| {
-            super::widgets::cover(ui, &palette, None, 48.0, 5.0, theme::Icon::Music);
+            picture(
+                app,
+                ui,
+                view,
+                Target::Recording(recording.id.clone()),
+                48.0,
+                false,
+            );
             ui.vertical(|ui| {
                 label(ui, &recording.title, 16.0, palette.text);
                 label(ui, &recording.artist, 13.0, palette.secondary);
@@ -153,7 +167,12 @@ fn row(app: &mut App, ui: &mut egui::Ui, recording: &Recording, candidate: bool)
     });
 }
 
-fn contributors(app: &App, ui: &mut egui::Ui, credits: &[crate::sample_connections::Contributor]) {
+fn contributors(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    view: &View,
+    credits: &[crate::sample_connections::Contributor],
+) {
     let palette = app.palette;
     let locale = app.locale;
     theme::text(
@@ -178,27 +197,11 @@ fn contributors(app: &App, ui: &mut egui::Ui, credits: &[crate::sample_connectio
                 egui::vec2(144.0, 150.0),
                 egui::Layout::top_down(egui::Align::Center),
                 |ui| {
-                    let (rect, response) =
-                        ui.allocate_exact_size(egui::vec2(72.0, 72.0), egui::Sense::click());
+                    let response =
+                        picture(app, ui, view, Target::Artist(credit.id.clone()), 72.0, true);
                     response.widget_info(|| {
                         egui::WidgetInfo::labeled(egui::WidgetType::Link, true, &credit.name)
                     });
-                    ui.painter()
-                        .circle_filled(rect.center(), 36.0, palette.surface_active);
-                    let initials: String = credit
-                        .name
-                        .split_whitespace()
-                        .take(2)
-                        .filter_map(|word| word.chars().next())
-                        .collect();
-                    let galley = crate::bidi::layout_line(
-                        ui.painter(),
-                        initials,
-                        theme::bold(24.0),
-                        palette.text,
-                    );
-                    ui.painter()
-                        .galley(rect.center() - galley.size() / 2.0, galley, palette.text);
                     if response.on_hover_text(&credit.name).clicked() {
                         ui.ctx()
                             .open_url(egui::OpenUrl::new_tab(credit.source_url()));
@@ -227,6 +230,62 @@ fn contributors(app: &App, ui: &mut egui::Ui, credits: &[crate::sample_connectio
         }
     });
     ui.add_space(24.0);
+}
+
+/// Resolving image URLs is an action, applied after drawing like any other request.
+/// Offscreen rows do not start network work. Each target is requested once per view.
+fn picture(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    view: &View,
+    target: Target,
+    size: f32,
+    round: bool,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(
+        egui::Vec2::splat(size),
+        if round {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        },
+    );
+    let picture = view.pictures.get(&target).and_then(Option::as_ref);
+    if ui.is_rect_visible(rect) && !view.pictures.contains_key(&target) {
+        app.actions.push(Action::SamplePicture {
+            request: view.request,
+            target,
+        });
+    }
+    super::widgets::paint_cover(
+        ui,
+        &app.palette,
+        picture.map(|p| p.url.as_str()),
+        rect,
+        if round { size / 2.0 } else { 5.0 },
+        if round {
+            theme::Icon::User
+        } else {
+            theme::Icon::Music
+        },
+        Some(app.backend.art()),
+    );
+    if let Some(picture) = picture {
+        response.on_hover_ui(|ui| {
+            let text = crate::bidi::layout(
+                ui.painter(),
+                &picture.credit,
+                theme::regular(13.0),
+                app.palette.text,
+                ui.available_width(),
+                usize::MAX,
+                None,
+            );
+            ui.hyperlink_to(text, &picture.source);
+        })
+    } else {
+        response
+    }
 }
 
 fn label(ui: &mut egui::Ui, text: &str, size: f32, color: egui::Color32) {

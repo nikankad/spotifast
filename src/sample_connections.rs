@@ -1,6 +1,6 @@
 //! On-demand recording sample relationships from MusicBrainz, never audio.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -12,8 +12,10 @@ use crate::api::models::Track;
 use crate::http::Http;
 use crate::model::Loadable;
 
+pub mod images;
+
 const SAMPLES: &str = "9efd9ce9-e702-448b-8e76-641515e8fe62";
-const ROOT: &str = "https://musicbrainz.org/ws/2/recording/";
+const ROOT: &str = "https://musicbrainz.org/ws/2/";
 const MAX_BODY: usize = 2 * 1024 * 1024;
 const CACHE_LIFETIME: Duration = Duration::from_secs(3600);
 
@@ -118,9 +120,50 @@ pub struct View {
     pub request: u64,
     pub query: Query,
     pub result: Loadable<Found>,
+    /// Absent until visible, then pending or unavailable, or an attributed image.
+    pub pictures: HashMap<images::Target, Option<images::Picture>>,
 }
 
 impl View {
+    pub fn request_picture(&mut self, request: u64, target: &images::Target) -> bool {
+        if request != self.request || self.pictures.contains_key(target) {
+            return false;
+        }
+        let belongs = match (&self.result, target) {
+            (Loadable::Loaded(Found::Connections(c)), images::Target::Artist(id)) => {
+                c.contributors.iter().any(|artist| artist.id == *id)
+            }
+            (Loadable::Loaded(Found::Connections(c)), images::Target::Recording(id)) => {
+                c.recording.id == *id
+                    || c.samples_from
+                        .iter()
+                        .chain(&c.sampled_by)
+                        .any(|r| r.id == *id)
+            }
+            (Loadable::Loaded(Found::Candidates(c)), images::Target::Recording(id)) => {
+                c.iter().any(|r| r.id == *id)
+            }
+            _ => false,
+        };
+        if belongs {
+            self.pictures.insert(target.clone(), None);
+        }
+        belongs
+    }
+
+    pub fn receive_picture(
+        &mut self,
+        request: u64,
+        target: images::Target,
+        picture: Option<images::Picture>,
+    ) {
+        if request == self.request
+            && let Some(entry) = self.pictures.get_mut(&target)
+        {
+            *entry = picture;
+        }
+    }
+
     /// A completion cannot reopen a dismissed dialog or replace a newer song.
     pub fn receive(&mut self, request: u64, result: Result<Found, String>) {
         if self.request == request {
@@ -163,6 +206,10 @@ impl Provider {
     async fn get(&self, id: &str, query: &[(&str, String)]) -> Result<Value> {
         let mut url = reqwest::Url::parse(&format!("{}{id}", self.root))?;
         url.query_pairs_mut().extend_pairs(query);
+        self.get_url(url).await
+    }
+
+    async fn get_url(&self, url: reqwest::Url) -> Result<Value> {
         let key = url.to_string();
         let mut state = self.state.lock().await;
         state
@@ -269,7 +316,7 @@ impl Provider {
         }
         let value = self
             .get(
-                &recording.id,
+                &format!("recording/{}", recording.id),
                 &[
                     (
                         "inc",
@@ -290,7 +337,7 @@ impl Provider {
     async fn search(&self, query: &str) -> Result<Vec<Recording>> {
         let value = self
             .get(
-                "",
+                "recording/",
                 &[
                     ("query", query.into()),
                     ("limit", "25".into()),
@@ -653,11 +700,76 @@ mod tests {
             request: 2,
             query: Query::Recording(recording),
             result: Loadable::Loading,
+            pictures: HashMap::new(),
         };
         view.receive(1, Ok(Found::Candidates(Vec::new())));
         assert!(view.result.is_loading());
         view.receive(2, Err("offline".into()));
         assert_eq!(view.result, Loadable::Failed("offline".into()));
+    }
+
+    #[test]
+    fn pictures_are_requested_once_and_stale_or_unrequested_images_are_ignored() {
+        let connections = parse_connections(&rockafeller()).unwrap();
+        let target = images::Target::Recording(connections.samples_from[0].id.clone());
+        let other = images::Target::Artist("661e20c8-3d82-4da2-94a2-97d9e11691c0".into());
+        let mut view = View {
+            request: 7,
+            query: Query::Recording(connections.recording.clone()),
+            result: Loadable::Loaded(Found::Connections(connections)),
+            pictures: HashMap::new(),
+        };
+        assert!(!view.request_picture(6, &target));
+        assert!(!view.request_picture(7, &images::Target::Recording("unrelated".into())));
+        assert!(view.request_picture(7, &target));
+        assert!(!view.request_picture(7, &target));
+        let photo = images::Picture {
+            url: "https://coverartarchive.org/image".into(),
+            source: "https://musicbrainz.org/release/source".into(),
+            credit: "Cover Art Archive".into(),
+        };
+        view.receive_picture(6, target.clone(), Some(photo.clone()));
+        assert!(view.pictures[&target].is_none());
+        view.receive_picture(7, other.clone(), Some(photo.clone()));
+        assert!(!view.pictures.contains_key(&other));
+        view.receive_picture(7, target.clone(), Some(photo.clone()));
+        assert_eq!(view.pictures[&target], Some(photo));
+        // A missing portrait is a completed lookup, not a request every frame.
+        assert!(view.request_picture(7, &other));
+        view.receive_picture(7, other.clone(), None);
+        assert!(!view.request_picture(7, &other));
+        assert!(matches!(
+            view.result,
+            Loadable::Loaded(Found::Connections(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn cover_lookup_uses_recording_identity_and_the_shared_cache_and_transport() {
+        let id = "5d617966-5ef7-46ea-96c7-1e43ee7b5d5b";
+        let (provider, task) = server(vec![ok(json!({"releases":[{
+            "id":id, "status":"Official", "cover-art-archive":{"front":true}
+        }]}))])
+        .await;
+        let target = images::Target::Recording("7da4bc62-6876-4f21-9f01-1c79967df855".into());
+        let first = provider.picture(&target).await.unwrap().unwrap();
+        assert!(first.url.ends_with(&format!("{id}/front-250")));
+        assert_eq!(provider.picture(&target).await.unwrap(), Some(first));
+        let requests = task.await.unwrap();
+        assert!(
+            requests[0]
+                .0
+                .starts_with("GET /release?recording=7da4bc62-6876-4f21-9f01-1c79967df855&")
+        );
+        assert!(!requests[0].0.to_lowercase().contains("authorization:"));
+        let provider = Provider::new(Http::unavailable("must not connect".into()));
+        assert!(
+            provider
+                .picture(&images::Target::Artist("../../other".into()))
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -699,7 +811,7 @@ mod tests {
         });
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let mut provider = Provider::new(Http::new(client));
-        provider.root = format!("http://{address}/recording/");
+        provider.root = format!("http://{address}/");
         (provider, task)
     }
 

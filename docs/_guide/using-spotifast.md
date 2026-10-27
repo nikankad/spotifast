@@ -186,7 +186,10 @@ You can also right-click a Spotify song and choose **Sample connections**.
 The view shows contributor cards above **Samples from** and **Sampled by**.
 Click a contributor's circle to open their MusicBrainz profile. Credits can
 include artists, producers, engineers, composers, lyricists, and writers.
-Initials stand in for portraits, which MusicBrainz does not provide.
+Song rows include cover art from Cover Art Archive. Contributor circles show
+photos from a linked Spotify profile, or Wikimedia Commons when available.
+Hover an image for its source and photo credit. A missing image keeps its
+placeholder.
 
 Choose **Explore samples** to follow a related recording's connections, or
 **Find on Spotify** to search for it in Spotifast. Search results let you pick
@@ -201,9 +204,13 @@ sample timestamps, collaborator counts, or play counts.
 
 Opening the view sends the song's ISRC, or its title and artist, to
 [musicbrainz.org](https://musicbrainz.org). Following a recording sends its
-MusicBrainz ID. It sends no Spotify credentials. Nothing is requested merely
-because the card is visible. Successful responses stay in memory for one hour
-and disappear when Spotifast closes.
+MusicBrainz ID. Visible artwork also looks up the recording's releases or the
+artist's linked Spotify profile (through its public link-preview API), or a
+linked Wikidata entry and Wikimedia Commons photo information.
+Image files come from Cover Art Archive (and its Internet Archive storage),
+Spotify, and Wikimedia. These requests follow your proxy settings and send no
+Spotify credentials. Nothing is requested merely because the card is visible.
+Metadata stays in memory for one hour. Image files use the normal artwork cache.
 
 ## Viewing cover artwork
 

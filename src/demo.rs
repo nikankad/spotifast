@@ -1144,6 +1144,29 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
                         request: 0,
                         query,
                         result,
+                        pictures: {
+                            #[derive(serde::Deserialize)]
+                            struct ImageFixture {
+                                kind: String,
+                                id: String,
+                                #[serde(flatten)]
+                                picture: crate::sample_connections::images::Picture,
+                            }
+                            serde_json::from_str::<Vec<ImageFixture>>(include_str!(
+                                "testdata/samples/images.json"
+                            ))
+                            .unwrap()
+                            .into_iter()
+                            .map(|image| {
+                                let target = if image.kind == "artist" {
+                                    crate::sample_connections::images::Target::Artist(image.id)
+                                } else {
+                                    crate::sample_connections::images::Target::Recording(image.id)
+                                };
+                                (target, Some(image.picture))
+                            })
+                            .collect()
+                        },
                     },
                 )));
             }

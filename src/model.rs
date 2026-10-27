@@ -1111,6 +1111,10 @@ pub struct Toast {
 #[derive(Clone, Debug)]
 pub enum Action {
     SampleConnections(crate::sample_connections::Query),
+    SamplePicture {
+        request: u64,
+        target: crate::sample_connections::images::Target,
+    },
     Open(Page),
     /// Opens the radio of a song shown in a list, after caching the row's
     /// song so the page has its name and cover (#644).

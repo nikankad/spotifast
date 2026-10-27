@@ -2598,6 +2598,15 @@ impl App {
                         view.receive(request, result);
                     }
                 }
+                Event::SamplePicture {
+                    request,
+                    target,
+                    picture,
+                } => {
+                    if let Some(Dialog::SampleConnections(view)) = &mut self.dialog {
+                        view.receive_picture(request, target, picture);
+                    }
+                }
                 Event::Lyrics { uri, result } => {
                     if self.lyrics_uri.as_deref() == Some(uri.as_str()) {
                         self.lyrics = match result {
@@ -11443,12 +11452,21 @@ impl App {
                         request: self.sample_request,
                         query: query.clone(),
                         result: Loadable::Loading,
+                        pictures: Default::default(),
                     },
                 )));
                 self.backend.send(Command::SampleConnections {
                     request: self.sample_request,
                     query,
                 });
+            }
+            Action::SamplePicture { request, target } => {
+                if let Some(Dialog::SampleConnections(view)) = &mut self.dialog
+                    && view.request_picture(request, &target)
+                {
+                    self.backend
+                        .send(Command::SamplePicture { request, target });
+                }
             }
             Action::ShowDialog(mut dialog) => {
                 if let Dialog::EditPlaylist { id, cover, .. } = &mut dialog

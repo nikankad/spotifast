@@ -1,0 +1,66 @@
+[
+  {
+    "kind": "recording",
+    "id": "4e5f16e7-330e-4459-aa30-71a7aabac392",
+    "name": "The Rockafeller Skank",
+    "url": "https://coverartarchive.org/release/056d71ea-4a8f-4374-8b4b-2579c1797e9f/front-250",
+    "source": "https://musicbrainz.org/release/056d71ea-4a8f-4374-8b4b-2579c1797e9f/cover-art",
+    "credit": "Cover Art Archive"
+  },
+  {
+    "kind": "recording",
+    "id": "33b615ad-8414-417d-8ae1-0dfd48f6aee8",
+    "name": "check out my swing funk",
+    "url": "https://coverartarchive.org/release/7db3d0ce-eb1f-435d-b194-f2e36957e792/front-250",
+    "source": "https://musicbrainz.org/release/7db3d0ce-eb1f-435d-b194-f2e36957e792/cover-art",
+    "credit": "Cover Art Archive"
+  },
+  {
+    "kind": "recording",
+    "id": "7da4bc62-6876-4f21-9f01-1c79967df855",
+    "name": "Sliced Tomatoes",
+    "url": "https://coverartarchive.org/release/5d617966-5ef7-46ea-96c7-1e43ee7b5d5b/front-250",
+    "source": "https://musicbrainz.org/release/5d617966-5ef7-46ea-96c7-1e43ee7b5d5b/cover-art",
+    "credit": "Cover Art Archive"
+  },
+  {
+    "kind": "recording",
+    "id": "593679ce-ccc0-4eb2-bcc3-c76d24b4110d",
+    "name": "Beat Girl (main title)",
+    "url": "https://coverartarchive.org/release/5a75a173-5a17-4091-a250-c892087d4768/front-250",
+    "source": "https://musicbrainz.org/release/5a75a173-5a17-4091-a250-c892087d4768/cover-art",
+    "credit": "Cover Art Archive"
+  },
+  {
+    "kind": "recording",
+    "id": "64ae1a91-a750-418c-ae91-55cb81ac1695",
+    "name": "Tout le monde en parle : Rockafeller Skank",
+    "url": "https://coverartarchive.org/release/bf4a18af-b325-48e8-89dd-3585534c52c8/front-250",
+    "source": "https://musicbrainz.org/release/bf4a18af-b325-48e8-89dd-3585534c52c8/cover-art",
+    "credit": "Cover Art Archive"
+  },
+  {
+    "kind": "recording",
+    "id": "8cd37884-4679-41e9-bd7d-f40f557528b7",
+    "name": "The Rockafeller Skank",
+    "url": "https://coverartarchive.org/release/f550f26e-1aa8-4b80-b094-7e44133834c1/front-250",
+    "source": "https://musicbrainz.org/release/f550f26e-1aa8-4b80-b094-7e44133834c1/cover-art",
+    "credit": "Cover Art Archive"
+  },
+  {
+    "kind": "artist",
+    "id": "34c63966-445c-4613-afe1-4f0e1e53ae9a",
+    "name": "Fatboy Slim",
+    "url": "https://image-cdn-fa.spotifycdn.com/image/ab67616100005174c20ed3229eeced918966a009",
+    "source": "https://open.spotify.com/artist/4Y7tXHSEejGu1vQ9bwDdXW",
+    "credit": "Spotify"
+  },
+  {
+    "kind": "artist",
+    "id": "661e20c8-3d82-4da2-94a2-97d9e11691c0",
+    "name": "John Barry",
+    "url": "https://upload.wikimedia.org/wikipedia/commons/f/f8/John-barry-2006.jpg",
+    "source": "https://commons.wikimedia.org/wiki/File:John-barry-2006.jpg",
+    "credit": "Barry_in_concert.jpg: Geoff Leonard. (The original uploader was Geoffers007 at English Wikipedia.)\nderivative work: Impy4ever (talk) · CC BY-SA 1.0 · Wikimedia Commons"
+  }
+]

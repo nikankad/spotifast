@@ -207,8 +207,11 @@ recording/work artist credits when the listener opens the view. Both sample
 directions and the contributor credits come from this one metadata provider.
 Coverage depends on the selected recording. Spotify playback remains on
 librespot; a related recording opens an ordinary Spotify search. MusicBrainz
-does not supply portraits, sample timestamps, Spotify play counts, or Spotify
-collaborator counts through this lookup. Interpolations are not inferred from
+does not supply portraits directly. Cover Art Archive provides release covers,
+and linked Spotify artist profiles provide available photos through the public
+oEmbed link-preview API without a Web API grant. Linked Wikidata entries and
+Wikimedia Commons provide portraits when a Spotify preview has none. The lookup supplies no sample timestamps, Spotify play counts, or
+Spotify collaborator counts. Interpolations are not inferred from
 sample or work relationships.
 
 ## Not available
