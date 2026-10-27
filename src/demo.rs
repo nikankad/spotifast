@@ -1093,6 +1093,60 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
     }
     for surface in show.unwrap_or("").split(',').map(str::trim) {
         match surface {
+            "sample-rockafeller" | "sample-tomatoes" | "sample-loading" | "sample-empty"
+            | "sample-error" => {
+                let body = if surface == "sample-tomatoes" {
+                    include_str!("testdata/samples/tomatoes.json")
+                } else {
+                    include_str!("testdata/samples/rockafeller.json")
+                };
+                let connections = crate::sample_connections::parse_connections(
+                    &serde_json::from_str(body).unwrap(),
+                )
+                .unwrap();
+                if let Some(remote) = &mut app.remote {
+                    let track = Track {
+                        uri: "spotify:track:sample-demo".into(),
+                        name: connections.recording.title.clone(),
+                        artists: vec![ArtistRef {
+                            name: connections.recording.artist.clone(),
+                            ..Default::default()
+                        }],
+                        duration_ms: connections.recording.duration_ms.unwrap_or(240_000),
+                        ..Default::default()
+                    };
+                    remote.state.item = Some(PlayableItem::Track(track.clone()));
+                    remote.state.context = None;
+                    if let Some(queue) = app.queue.get_mut() {
+                        queue.currently_playing = Some(PlayableItem::Track(track));
+                    }
+                }
+                let query =
+                    crate::sample_connections::Query::Recording(connections.recording.clone());
+                let result = match surface {
+                    "sample-loading" => Loadable::Loading,
+                    "sample-error" => Loadable::Failed("Service unavailable".into()),
+                    "sample-empty" => {
+                        Loadable::Loaded(crate::sample_connections::Found::Connections(
+                            crate::sample_connections::Connections {
+                                samples_from: Vec::new(),
+                                sampled_by: Vec::new(),
+                                ..connections
+                            },
+                        ))
+                    }
+                    _ => {
+                        Loadable::Loaded(crate::sample_connections::Found::Connections(connections))
+                    }
+                };
+                app.dialog = Some(crate::model::Dialog::SampleConnections(Box::new(
+                    crate::sample_connections::View {
+                        request: 0,
+                        query,
+                        result,
+                    },
+                )));
+            }
             "presaved" => {
                 for page in app.album_pages.values_mut() {
                     if let Some(data) = &mut page.prerelease {
@@ -1749,6 +1803,133 @@ mod tests {
         // These frames never advance the clock or take pictures.
         app.reveal_theme_changes = false;
         (ctx, app)
+    }
+
+    #[test]
+    fn sample_card_opens_immediately_and_old_answers_cannot_replace_another_song() {
+        let (ctx, mut app) = accessible_app("sample-card");
+        app.open(Page::Queue);
+        let _ = accessible_frame(&ctx, &mut app, vec![]);
+        let tree = accessible_frame(&ctx, &mut app, vec![]);
+        let card = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| {
+                node.role() == egui::accesskit::Role::Button
+                    && node
+                        .label()
+                        .is_some_and(|label| label.starts_with("Sample connections"))
+            })
+            .expect("card beneath Now playing")
+            .0;
+        let _ = accessible_frame(
+            &ctx,
+            &mut app,
+            vec![accessible_action(
+                card,
+                egui::accesskit::Action::Click,
+                None,
+            )],
+        );
+        let Some(Dialog::SampleConnections(view)) = &app.dialog else {
+            panic!("card opens the view")
+        };
+        assert!(view.result.is_loading());
+        let old_request = view.request;
+        let connections = crate::sample_connections::parse_connections(
+            &serde_json::from_str(include_str!("testdata/samples/tomatoes.json")).unwrap(),
+        )
+        .unwrap();
+        app.apply(
+            Action::SampleConnections(crate::sample_connections::Query::Recording(
+                connections.recording.clone(),
+            )),
+            &ctx,
+        );
+        let Some(Dialog::SampleConnections(view)) = &mut app.dialog else {
+            panic!()
+        };
+        view.receive(
+            old_request,
+            Ok(crate::sample_connections::Found::Connections(connections)),
+        );
+        assert!(view.result.is_loading());
+        assert_eq!(view.query.title(), "Sliced Tomatoes");
+        app.apply(Action::CloseDialog, &ctx);
+        assert!(app.dialog.is_none());
+        app.backend.shutdown();
+    }
+
+    #[cfg(feature = "demo")]
+    #[test]
+    fn sample_views_render_in_both_themes_at_narrow_and_normal_sizes() {
+        let (ctx, mut app) = accessible_app("sample-sizes");
+        for dark in [false, true] {
+            app.settings.theme = if dark {
+                crate::settings::ThemeChoice::Dark
+            } else {
+                crate::settings::ThemeChoice::Light
+            };
+            app.apply(Action::SettingsChanged, &ctx);
+            for width in [640.0, 1280.0] {
+                for surface in [
+                    "sample-rockafeller",
+                    "sample-tomatoes",
+                    "sample-loading",
+                    "sample-empty",
+                    "sample-error",
+                ] {
+                    apply_flags(&mut app, None, Some(surface));
+                    for pass in 0..3 {
+                        let mut output = ctx.run_ui(
+                            egui::RawInput {
+                                screen_rect: Some(egui::Rect::from_min_size(
+                                    egui::Pos2::ZERO,
+                                    egui::vec2(width, 800.0),
+                                )),
+                                ..Default::default()
+                            },
+                            |ui| app.frame_ui(ui),
+                        );
+                        output.textures_delta.clear();
+                        // The modal is the surface under test. Background text can
+                        // extend past a narrow window and be clipped by its panel.
+                        let modal_start = output.shapes.iter().position(|shape| matches!(&shape.shape,
+                            egui::Shape::Text(text) if text.galley.job.text == "Sample connections"
+                        ));
+                        if pass == 2 {
+                            let modal_start = modal_start.expect("the sample view is drawn");
+                            let outside: Vec<_> = output.shapes[modal_start..]
+                                .iter()
+                                .filter_map(|shape| match &shape.shape {
+                                    egui::Shape::Text(text)
+                                        if shape.clip_rect.intersects(
+                                            text.galley.rect.translate(text.pos.to_vec2()),
+                                        ) =>
+                                    {
+                                        let rect = text.galley.rect.translate(text.pos.to_vec2());
+                                        (rect.left() < -1.0 || rect.right() > width + 1.0)
+                                            .then(|| (text.galley.job.text.clone(), rect))
+                                    }
+                                    _ => None,
+                                })
+                                .collect();
+                            assert!(
+                                outside.is_empty(),
+                                "{surface} at {width}, dark={dark}: {outside:?}"
+                            );
+                        }
+                        if pass == 2 && width == 1280.0 && surface == "sample-rockafeller" {
+                            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+                                egui::Shape::Text(text) if text.galley.job.text == "Sliced Tomatoes"
+                                    && shape.clip_rect.intersects(text.galley.rect.translate(text.pos.to_vec2()))
+                            )), "the sample list must be visible below the contributor cards");
+                        }
+                    }
+                }
+            }
+        }
+        app.backend.shutdown();
     }
 
     /// #576: the Library heading never runs under the header's buttons. It

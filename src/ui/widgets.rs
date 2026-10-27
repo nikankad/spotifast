@@ -1112,6 +1112,16 @@ fn item_menu_at(
     menu_separator(ui, &palette);
     match item {
         PlayableItem::Track(track) => {
+            if let Some(query) = crate::sample_connections::Query::from_track(track)
+                && menu_item(
+                    ui,
+                    &palette,
+                    Some(Icon::Search),
+                    &gettext(locale, "Sample connections"),
+                )
+            {
+                app.actions.push(Action::SampleConnections(query));
+            }
             if menu_item(
                 ui,
                 &palette,

@@ -179,6 +179,32 @@ default order, where the rows on screen match the order saved on Spotify.
 Right-clicking the playing song in the player bar offers the same removal
 while it plays from a playlist you can edit.
 
+## Sample connections
+
+Open Queue and click the **Sample connections** card beneath **Now playing**.
+You can also right-click a Spotify song and choose **Sample connections**.
+The view shows contributor cards above **Samples from** and **Sampled by**.
+Click a contributor's circle to open their MusicBrainz profile. Credits can
+include artists, producers, engineers, composers, lyricists, and writers.
+Initials stand in for portraits, which MusicBrainz does not provide.
+
+Choose **Explore samples** to follow a related recording's connections, or
+**Find on Spotify** to search for it in Spotifast. Search results let you pick
+an available Spotify version before playing it. The feature does not stream
+or preview audio from MusicBrainz.
+
+MusicBrainz is community maintained and coverage varies. No information found
+does not mean a song has no samples or other contributors. If several edits
+or versions match, choose the correct recording from the displayed candidates.
+This view covers recording samples, not interpolations, and does not provide
+sample timestamps, collaborator counts, or play counts.
+
+Opening the view sends the song's ISRC, or its title and artist, to
+[musicbrainz.org](https://musicbrainz.org). Following a recording sends its
+MusicBrainz ID. It sends no Spotify credentials. Nothing is requested merely
+because the card is visible. Successful responses stay in memory for one hour
+and disappear when Spotifast closes.
+
 ## Viewing cover artwork
 
 Click the cover at the top of a playlist, album, artist, or podcast page to

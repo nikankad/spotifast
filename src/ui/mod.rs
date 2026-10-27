@@ -17,6 +17,7 @@ pub mod player_bar;
 mod prerelease;
 pub mod queue;
 pub mod radio;
+mod sample_connections;
 pub mod search;
 pub mod settings;
 pub mod show;

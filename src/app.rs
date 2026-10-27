@@ -569,6 +569,7 @@ pub struct App {
     accent_pending: HashSet<String>,
 
     pub dialog: Option<Dialog>,
+    sample_request: u64,
     cover_request: u64,
     cover_uploads: HashMap<String, u64>,
     /// Successful uploads stay visible while Spotify propagates the new image.
@@ -1197,6 +1198,7 @@ impl App {
             art_palettes: HashMap::new(),
             accent_pending: HashSet::new(),
             dialog: None,
+            sample_request: 0,
             cover_request: 0,
             cover_uploads: HashMap::new(),
             uploaded_covers: Default::default(),
@@ -2591,6 +2593,11 @@ impl App {
                     }
                     Err(error) => log::warn!("rootlist unavailable: {error}"),
                 },
+                Event::SampleConnections { request, result } => {
+                    if let Some(Dialog::SampleConnections(view)) = &mut self.dialog {
+                        view.receive(request, result);
+                    }
+                }
                 Event::Lyrics { uri, result } => {
                     if self.lyrics_uri.as_deref() == Some(uri.as_str()) {
                         self.lyrics = match result {
@@ -3020,6 +3027,10 @@ impl App {
 
     /// Clears account data while preserving request serials that reject late answers.
     fn reset_data(&mut self) {
+        if matches!(self.dialog, Some(Dialog::SampleConnections(_))) {
+            self.dialog = None;
+        }
+        self.backend.send(Command::CancelSampleConnections);
         self.pending_remote_volume = None;
         self.local_transfer_sequence = None;
         self.queue_start_pending = None;
@@ -11425,6 +11436,20 @@ impl App {
                     });
                 }
             }
+            Action::SampleConnections(query) => {
+                self.sample_request = self.sample_request.wrapping_add(1);
+                self.dialog = Some(Dialog::SampleConnections(Box::new(
+                    crate::sample_connections::View {
+                        request: self.sample_request,
+                        query: query.clone(),
+                        result: Loadable::Loading,
+                    },
+                )));
+                self.backend.send(Command::SampleConnections {
+                    request: self.sample_request,
+                    query,
+                });
+            }
             Action::ShowDialog(mut dialog) => {
                 if let Dialog::EditPlaylist { id, cover, .. } = &mut dialog
                     && let Some(request) = self.cover_uploads.get(id)
@@ -11434,6 +11459,9 @@ impl App {
                 self.dialog = Some(dialog);
             }
             Action::CloseDialog => {
+                if matches!(self.dialog, Some(Dialog::SampleConnections(_))) {
+                    self.backend.send(Command::CancelSampleConnections);
+                }
                 if matches!(self.dialog, Some(Dialog::PersonalAppIntro)) {
                     self.intro_answered(jiff::Timestamp::now());
                 }

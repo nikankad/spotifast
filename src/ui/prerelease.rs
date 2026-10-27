@@ -8,7 +8,7 @@ use egui::{Color32, Frame, Margin, Sense, Stroke, Vec2, vec2};
 use super::widgets;
 use crate::api::models::pick_image;
 use crate::app::App;
-use crate::i18n::gettext;
+use crate::i18n::{gettext, pgettext};
 use crate::model::{Action, Page, RowContext};
 use crate::prerelease::Prerelease;
 use crate::theme::{self, Icon};
@@ -257,7 +257,7 @@ pub(super) fn show(app: &mut App, ui: &mut egui::Ui, data: &Prerelease) {
         ui.add_space(16.0);
         theme::text(
             ui,
-            crate::i18n::pgettext(locale, "column", "Title"),
+            pgettext(locale, "column", "Title"),
             theme::regular(13.0),
             palette.secondary,
         );

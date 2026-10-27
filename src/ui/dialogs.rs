@@ -15,6 +15,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         cover_art(app, ctx, url, shown.as_deref(), title);
         return;
     }
+    if let Dialog::SampleConnections(view) = &dialog {
+        super::sample_connections::show(app, ctx, view);
+        return;
+    }
     let palette = app.palette;
     let locale = app.locale;
     let frame = Frame::new()
@@ -39,7 +43,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             ui.set_width(420.0);
             match dialog {
                 // Drawn by cover_art above.
-                Dialog::CoverArt { .. } => {}
+                Dialog::CoverArt { .. } | Dialog::SampleConnections(_) => {}
                 Dialog::PersonalAppIntro => {
                     theme::text(ui, gettext(locale, "Move to your own Spotify app"), theme::bold(20.0), palette.text);
                     ui.add_space(12.0);

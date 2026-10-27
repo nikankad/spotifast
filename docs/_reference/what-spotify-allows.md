@@ -198,6 +198,19 @@ audio key, nothing in Spotifast can fix it; see
 [Spotify refused the audio key](/troubleshooting/#audio-key). The patches are listed in
 `Cargo.toml` and dropped as librespot merges them.
 
+## External recording metadata
+
+**Sample connections and contributors** come from the public
+[MusicBrainz API](https://musicbrainz.org/doc/MusicBrainz_API), not Spotify's
+SongDNA service. Spotifast requests recording sample relationships and
+recording/work artist credits when the listener opens the view. Both sample
+directions and the contributor credits come from this one metadata provider.
+Coverage depends on the selected recording. Spotify playback remains on
+librespot; a related recording opens an ordinary Spotify search. MusicBrainz
+does not supply portraits, sample timestamps, Spotify play counts, or Spotify
+collaborator counts through this lookup. Interpolations are not inferred from
+sample or work relationships.
+
 ## Not available
 
 The Web API and librespot do not provide these features:

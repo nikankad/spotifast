@@ -435,6 +435,10 @@ fn contents(app: &mut App, ui: &mut egui::Ui, compact: bool) {
                 position: None,
             },
         );
+        if let PlayableItem::Track(track) = current {
+            ui.add_space(8.0);
+            super::sample_connections::card(app, ui, track);
+        }
         ui.add_space(SECTION_GAP);
     }
     if queue_is_empty(app) {

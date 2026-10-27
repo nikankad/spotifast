@@ -701,6 +701,11 @@ pub fn autostart() -> fastframe_autostart::Autostart {
 }
 
 pub enum Command {
+    SampleConnections {
+        request: u64,
+        query: crate::sample_connections::Query,
+    },
+    CancelSampleConnections,
     OpenThemesFolder,
     /// Read or change the login registration, off the UI thread: it reads
     /// and writes a file, the registry or D-Bus, and the Flatpak portal may
@@ -965,6 +970,10 @@ pub struct LyricsRequest {
 }
 
 pub enum Event {
+    SampleConnections {
+        request: u64,
+        result: Result<crate::sample_connections::Found, String>,
+    },
     /// The folder picked in the local files dialog; `None` when cancelled.
     LocalFilesFolderChosen(Option<std::path::PathBuf>),
     /// The songs in `folder`, by the `spotify:local:` URIs they play for.
@@ -1832,6 +1841,8 @@ struct Worker {
     engine_proxy: Option<reqwest::Url>,
     web_client_id: Option<String>,
     http: Http,
+    sample_connections: Arc<crate::sample_connections::Provider>,
+    sample_task: Option<tokio::task::JoinHandle<()>>,
     /// Friends' names and avatars and their playlists' names, kept between
     /// Friend activity polls.
     friend_names: Arc<tokio::sync::Mutex<session_reads::FriendNames>>,
@@ -1961,7 +1972,9 @@ impl Worker {
             connect: Arc::default(),
             receiver_discovery: None,
             background_session: Arc::new(tokio::sync::Semaphore::new(4)),
+            sample_connections: Arc::new(crate::sample_connections::Provider::new(http.clone())),
             http,
+            sample_task: None,
             friend_names: Arc::default(),
             art,
             events,
@@ -2624,6 +2637,21 @@ impl Worker {
                         waker.wake();
                     });
                 }
+                Command::SampleConnections { request, query } => {
+                    self.cancel_sample_connections();
+                    let provider = Arc::clone(&self.sample_connections);
+                    let events = self.events.clone();
+                    let waker = self.waker.clone();
+                    self.sample_task = Some(tokio::spawn(async move {
+                        let result = provider
+                            .fetch(&query)
+                            .await
+                            .map_err(|error| format!("{error:#}"));
+                        let _ = events.send(Event::SampleConnections { request, result });
+                        waker.wake();
+                    }));
+                }
+                Command::CancelSampleConnections => self.cancel_sample_connections(),
                 Command::Lyrics(request) => self.fetch_lyrics(*request),
                 Command::Rootlist => self.fetch_rootlist(),
                 Command::RootlistFinished { generation, result } => {
@@ -3381,6 +3409,7 @@ impl Worker {
 
     /// Cancels in-flight account work and drops cached Home data on sign-out.
     fn sign_out(&mut self) {
+        self.cancel_sample_connections();
         self.spotify_restore_started = true;
         self.cancel_search();
         self.signed_in = false;
@@ -4558,6 +4587,12 @@ impl Worker {
             result,
         });
         self.start_album_type_lookup();
+    }
+
+    fn cancel_sample_connections(&mut self) {
+        if let Some(task) = self.sample_task.take() {
+            task.abort();
+        }
     }
 
     fn fetch_lyrics(&self, request: LyricsRequest) {

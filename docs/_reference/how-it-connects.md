@@ -280,6 +280,39 @@ out, or a reconnection that gives up stops it.
   macOS security assessment. Apps running from a disk image or an App Translocation
   directory must be moved to a writable installation directory first.
 
+## Sample connections
+
+`sample_connections::Provider` uses the shared, credential-free `Http` handle
+for on-demand GETs to `https://musicbrainz.org/ws/2/recording/`. The card below
+Now playing and the song context menu open a native view immediately. Only
+opening that view or following a recording asks the provider for metadata.
+It searches by ISRC when available, falling back to an escaped artist/title
+query if that returns nothing. An automatic match requires one exact artist
+and title match within three seconds of the Spotify duration, with no version
+disambiguation. Otherwise the listener chooses among up to 25 candidates.
+An ISRC alone never selects a recording.
+
+The lookup includes recording sample relationships, artist credits, recording
+artist relationships, and artist relationships for the performed work.
+Recording relationships with type ID
+`9efd9ce9-e702-448b-8e76-641515e8fe62` populate the two sample directions.
+Remixes, covers, and interpolations are not presented as samples. Work credits
+are read only from the performed work, not from works it is based on. Artist
+identities merge contributor roles. Contributor circles use initials and link
+to MusicBrainz; this provider has no artist portraits.
+
+Requests run on the backend runtime, use the configured proxy, carry a
+contactable Spotifast User-Agent, and carry no Spotify authorization. A shared
+mutex spaces requests at least 1.1 seconds apart, including cancelled tasks.
+A 429 or 503 preserves Retry-After (seconds or HTTP date), with a one-minute
+fallback, and shows a retryable error without an automatic retry loop. Each
+request times out after 20 seconds and response bodies are capped at 2 MiB.
+The provider keeps at most 32 successful responses in memory for one hour.
+There is no new state file or setting. Closing the view, choosing another
+recording, or signing out cancels its task. Request serials reject late results.
+**Find on Spotify** opens an ordinary in-app search, so a MusicBrainz result
+never automatically plays a potentially different Spotify recording.
+
 ## Collection loading and artwork
 
 Since 0.9.0, opening a playlist, album, artist, or podcast keeps any
@@ -706,7 +739,7 @@ The mode selects the protocol. Host and port are separate fields.
 These settings apply to Spotifast's requests. The external browser used
 for Spotify approval keeps its own network and proxy settings.
 
-The Web API, artwork, lyrics, update checks and downloads, and MilkDrop preset
+The Web API, artwork, lyrics, sample connections, update checks and downloads, and MilkDrop preset
 downloads follow that mode. Update downloads retain their release-host redirect
 restrictions and checksum verification. Local receivers on the LAN are never sent through a proxy.
 
