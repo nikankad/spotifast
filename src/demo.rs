@@ -1143,6 +1143,7 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
                     crate::sample_connections::View {
                         request: 0,
                         query,
+                        history: Vec::new(),
                         result,
                         pictures: {
                             #[derive(serde::Deserialize)]
@@ -1878,6 +1879,26 @@ mod tests {
         );
         assert!(view.result.is_loading());
         assert_eq!(view.query.title(), "Sliced Tomatoes");
+        // Trying again is no step back; Back returns to the song itself.
+        let tomatoes = view.query.clone();
+        app.apply(Action::SampleConnections(tomatoes), &ctx);
+        let Some(Dialog::SampleConnections(view)) = &app.dialog else {
+            panic!()
+        };
+        assert_eq!(view.history.len(), 1);
+        assert!(view.request > old_request + 1);
+        app.apply(Action::SampleBack, &ctx);
+        let Some(Dialog::SampleConnections(view)) = &app.dialog else {
+            panic!("Back keeps the view open")
+        };
+        assert!(view.history.is_empty());
+        assert!(matches!(
+            view.query,
+            crate::sample_connections::Query::Song { .. }
+        ));
+        assert!(view.result.is_loading());
+        app.apply(Action::SampleBack, &ctx);
+        assert!(matches!(app.dialog, Some(Dialog::SampleConnections(_))));
         app.apply(Action::CloseDialog, &ctx);
         assert!(app.dialog.is_none());
         app.backend.shutdown();
@@ -1917,7 +1938,8 @@ mod tests {
                         output.textures_delta.clear();
                         // The modal is the surface under test. Background text can
                         // extend past a narrow window and be clipped by its panel.
-                        let modal_start = output.shapes.iter().position(|shape| matches!(&shape.shape,
+                        // The queue's card shows the same words beneath the modal.
+                        let modal_start = output.shapes.iter().rposition(|shape| matches!(&shape.shape,
                             egui::Shape::Text(text) if text.galley.job.text == "Sample connections"
                         ));
                         if pass == 2 {

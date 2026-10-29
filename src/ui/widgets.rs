@@ -1116,7 +1116,7 @@ fn item_menu_at(
                 && menu_item(
                     ui,
                     &palette,
-                    Some(Icon::Search),
+                    Some(Icon::Disc),
                     &gettext(locale, "Sample connections"),
                 )
             {

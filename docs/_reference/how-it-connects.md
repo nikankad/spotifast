@@ -286,8 +286,10 @@ out, or a reconnection that gives up stops it.
 for on-demand GETs to `https://musicbrainz.org/ws/2/`. The card below
 Now playing and the song context menu open a native view immediately. Only
 opening that view or following a recording asks the provider for metadata.
-It searches by ISRC when available, falling back to an escaped artist/title
-query if that returns nothing. An automatic match requires one exact artist
+It searches by ISRC when available, falling back to an escaped query for the
+title and the first credited artist if that returns nothing, then to the title
+without a version suffix Spotify adds, such as " - Remastered 2011", if that
+returns nothing either. An automatic match requires one exact artist
 and title match within three seconds of the Spotify duration, with no version
 disambiguation. Otherwise the listener chooses among up to 25 candidates.
 An ISRC alone never selects a recording.

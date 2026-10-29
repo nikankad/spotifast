@@ -42,11 +42,15 @@ impl Recording {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Query {
     Song {
         title: String,
+        /// Every credited artist, as the song shows them.
         artist: String,
+        /// The first credited artist, which is what a search can match: a
+        /// joined "A, B" is rarely how MusicBrainz credits a collaboration.
+        first_artist: String,
         duration_ms: u32,
         isrc: Option<String>,
         cover: Option<String>,
@@ -62,6 +66,11 @@ impl Query {
         Some(Self::Song {
             title: track.name.clone(),
             artist: track.artist_names(),
+            first_artist: track
+                .artists
+                .first()
+                .map(|artist| artist.name.clone())
+                .unwrap_or_default(),
             duration_ms: track.duration_ms,
             isrc: track.external_ids.isrc.clone(),
             cover: track
@@ -119,6 +128,8 @@ pub enum Found {
 pub struct View {
     pub request: u64,
     pub query: Query,
+    /// The recordings explored before this one, most recent last.
+    pub history: Vec<Query>,
     pub result: Loadable<Found>,
     /// Absent until visible, then pending or unavailable, or an attributed image.
     pub pictures: HashMap<images::Target, Option<images::Picture>>,
@@ -275,6 +286,7 @@ impl Provider {
             Query::Song {
                 title,
                 artist,
+                first_artist,
                 duration_ms,
                 isrc,
                 ..
@@ -284,12 +296,28 @@ impl Provider {
                 if let Some(isrc) = isrc.as_deref().filter(|s| valid_isrc(s)) {
                     candidates = self.search(&format!("isrc:{isrc}")).await?;
                 }
-                if candidates.is_empty() {
+                let search_artist = if first_artist.is_empty() {
+                    artist
+                } else {
+                    first_artist
+                };
+                // Then without what Spotify appends to a title, such as
+                // " - Remastered 2011", which MusicBrainz leaves out. The
+                // automatic match below still compares the whole title.
+                let cleaned = crate::lyrics::clean_title(title);
+                let titles = [
+                    Some(title.as_str()),
+                    (cleaned != *title).then_some(&*cleaned),
+                ];
+                for search_title in titles.into_iter().flatten() {
+                    if !candidates.is_empty() {
+                        break;
+                    }
                     candidates = self
                         .search(&format!(
                             "recording:\"{}\" AND artist:\"{}\"",
-                            escape_search(title),
-                            escape_search(artist)
+                            escape_search(search_title),
+                            escape_search(search_artist)
                         ))
                         .await?;
                 }
@@ -699,6 +727,7 @@ mod tests {
         let mut view = View {
             request: 2,
             query: Query::Recording(recording),
+            history: Vec::new(),
             result: Loadable::Loading,
             pictures: HashMap::new(),
         };
@@ -716,6 +745,7 @@ mod tests {
         let mut view = View {
             request: 7,
             query: Query::Recording(connections.recording.clone()),
+            history: Vec::new(),
             result: Loadable::Loaded(Found::Connections(connections)),
             pictures: HashMap::new(),
         };
@@ -827,10 +857,49 @@ mod tests {
         Query::Song {
             title: "The Rockafeller Skank".into(),
             artist: "Fatboy Slim".into(),
+            first_artist: "Fatboy Slim".into(),
             duration_ms: 413_880,
             isrc: Some("GBBMQ9800025".into()),
             cover: None,
         }
+    }
+
+    fn search_query(request: &str) -> String {
+        let target = request.split(' ').nth(1).unwrap();
+        reqwest::Url::parse(&format!("http://localhost{target}"))
+            .unwrap()
+            .query_pairs()
+            .find(|(key, _)| key == "query")
+            .unwrap()
+            .1
+            .into_owned()
+    }
+
+    #[tokio::test]
+    async fn searches_name_the_first_artist_then_drop_spotify_title_suffixes() {
+        let empty = || ok(json!({"recordings": []}));
+        let (provider, task) = server(vec![empty(), empty()]).await;
+        let query = Query::Song {
+            title: "The Rockafeller Skank - Remastered 2015".into(),
+            artist: "Fatboy Slim, Guest".into(),
+            first_artist: "Fatboy Slim".into(),
+            duration_ms: 413_880,
+            isrc: None,
+            cover: None,
+        };
+        assert_eq!(
+            provider.fetch(&query).await.unwrap(),
+            Found::Candidates(Vec::new())
+        );
+        let requests = task.await.unwrap();
+        assert_eq!(
+            search_query(&requests[0].0),
+            "recording:\"The Rockafeller Skank \\- Remastered 2015\" AND artist:\"Fatboy Slim\""
+        );
+        assert_eq!(
+            search_query(&requests[1].0),
+            "recording:\"The Rockafeller Skank\" AND artist:\"Fatboy Slim\""
+        );
     }
 
     #[tokio::test]

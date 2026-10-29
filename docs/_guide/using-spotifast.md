@@ -191,7 +191,8 @@ photos from a linked Spotify profile, or Wikimedia Commons when available.
 Hover an image for its source and photo credit. A missing image keeps its
 placeholder.
 
-Choose **Explore samples** to follow a related recording's connections, or
+Choose **Explore samples** to follow a related recording's connections, and
+the back arrow to return to the recording before it, or
 **Find on Spotify** to search for it in Spotifast. Search results let you pick
 an available Spotify version before playing it. The feature does not stream
 or preview audio from MusicBrainz.

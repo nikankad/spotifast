@@ -1110,7 +1110,11 @@ pub struct Toast {
 /// Actions emitted while drawing and applied afterward to avoid borrow conflicts.
 #[derive(Clone, Debug)]
 pub enum Action {
+    /// Opens a song's or recording's sample connections. From inside the
+    /// view, a different recording keeps the one left behind for Back.
     SampleConnections(crate::sample_connections::Query),
+    /// Returns the sample view to the recording explored before this one.
+    SampleBack,
     SamplePicture {
         request: u64,
         target: crate::sample_connections::images::Target,

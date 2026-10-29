@@ -3034,6 +3034,27 @@ impl App {
         }
     }
 
+    fn open_sample_connections(
+        &mut self,
+        query: crate::sample_connections::Query,
+        history: Vec<crate::sample_connections::Query>,
+    ) {
+        self.sample_request = self.sample_request.wrapping_add(1);
+        self.dialog = Some(Dialog::SampleConnections(Box::new(
+            crate::sample_connections::View {
+                request: self.sample_request,
+                query: query.clone(),
+                history,
+                result: Loadable::Loading,
+                pictures: Default::default(),
+            },
+        )));
+        self.backend.send(Command::SampleConnections {
+            request: self.sample_request,
+            query,
+        });
+    }
+
     /// Clears account data while preserving request serials that reject late answers.
     fn reset_data(&mut self) {
         if matches!(self.dialog, Some(Dialog::SampleConnections(_))) {
@@ -11446,19 +11467,27 @@ impl App {
                 }
             }
             Action::SampleConnections(query) => {
-                self.sample_request = self.sample_request.wrapping_add(1);
-                self.dialog = Some(Dialog::SampleConnections(Box::new(
-                    crate::sample_connections::View {
-                        request: self.sample_request,
-                        query: query.clone(),
-                        result: Loadable::Loading,
-                        pictures: Default::default(),
-                    },
-                )));
-                self.backend.send(Command::SampleConnections {
-                    request: self.sample_request,
-                    query,
-                });
+                // Only the open view can ask for another recording: the card
+                // and the song menu sit behind it. Trying again is no step.
+                let history = match self.dialog.take() {
+                    Some(Dialog::SampleConnections(view)) => {
+                        let mut history = view.history;
+                        if view.query != query {
+                            history.push(view.query);
+                        }
+                        history
+                    }
+                    _ => Vec::new(),
+                };
+                self.open_sample_connections(query, history);
+            }
+            Action::SampleBack => {
+                if let Some(Dialog::SampleConnections(view)) = &mut self.dialog
+                    && let Some(query) = view.history.pop()
+                {
+                    let history = std::mem::take(&mut view.history);
+                    self.open_sample_connections(query, history);
+                }
             }
             Action::SamplePicture { request, target } => {
                 if let Some(Dialog::SampleConnections(view)) = &mut self.dialog
