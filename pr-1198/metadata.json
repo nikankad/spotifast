@@ -1,0 +1,33 @@
+{
+  "pull_request": "https://github.com/crmne/spotifast/pull/1198",
+  "baseline": "3767d53a0b3f720b00c29eebfa69806020267f8d",
+  "candidate": "c1844fdf5b55b735ff684dd2daf56736a1287b74",
+  "platform": "Linux x86_64, X11 through Xvfb, Mesa software OpenGL",
+  "fixture": "Identical paused demo playback; 1,000 loaded episodes per list; cached placeholder artwork.",
+  "different_pixels": {
+    "episodes-dark-720-top": 0,
+    "episodes-dark-720-end": 0,
+    "episodes-dark-720-menu": 0,
+    "episodes-dark-1280-top": 0,
+    "episodes-dark-1280-end": 0,
+    "episodes-dark-1280-menu": 0,
+    "episodes-light-720-top": 0,
+    "episodes-light-720-end": 0,
+    "episodes-light-720-menu": 0,
+    "episodes-light-1280-top": 0,
+    "episodes-light-1280-end": 0,
+    "episodes-light-1280-menu": 0,
+    "podcast-dark-720-top": 0,
+    "podcast-dark-720-end": 0,
+    "podcast-dark-720-menu": 0,
+    "podcast-dark-1280-top": 0,
+    "podcast-dark-1280-end": 0,
+    "podcast-dark-1280-menu": 0,
+    "podcast-light-720-top": 0,
+    "podcast-light-720-end": 0,
+    "podcast-light-720-menu": 0,
+    "podcast-light-1280-top": 0,
+    "podcast-light-1280-end": 0,
+    "podcast-light-1280-menu": 0
+  }
+}

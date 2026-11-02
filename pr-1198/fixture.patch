@@ -1,0 +1,39 @@
+diff --git a/src/demo.rs b/src/demo.rs
+index e1413aa..88cadd6 100644
+--- a/src/demo.rs
++++ b/src/demo.rs
+@@ -776,6 +776,34 @@ pub fn populate(app: &mut App) {
+             app.track_cache.insert(id.clone(), track.clone());
+         }
+     }
++    // Temporary shared review fixture. Not part of the proposed change.
++    if let Some(remote) = &mut app.remote {
++        remote.state.is_playing = false;
++    }
++    let saved = app.library.episodes.items.clone();
++    app.library.episodes.items = (0..1000)
++        .map(|index| {
++            let mut row = saved[index % saved.len()].clone();
++            row.episode.id = format!("1{index:021}");
++            row.episode.uri = format!("spotify:episode:{}", row.episode.id);
++            row
++        })
++        .collect();
++    app.library.episodes.total = Some(1000);
++    for page in app.show_pages.values_mut() {
++        let episodes = page.episodes.items.clone();
++        if !episodes.is_empty() {
++            page.episodes.items = (0..1000)
++                .map(|index| {
++                    let mut episode = episodes[index % episodes.len()].clone();
++                    episode.id = format!("2{index:021}");
++                    episode.uri = format!("spotify:episode:{}", episode.id);
++                    episode
++                })
++                .collect();
++            page.episodes.total = Some(1000);
++        }
++    }
+ }
+ 
+ #[cfg(feature = "demo")]
