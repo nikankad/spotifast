@@ -284,8 +284,17 @@ out, or a reconnection that gives up stops it.
 
 `sample_connections::Provider` uses the shared, credential-free `Http` handle
 for on-demand GETs to `https://musicbrainz.org/ws/2/`. The card below
-Now playing and the song context menu open a native view immediately. Only
-opening that view or following a recording asks the provider for metadata.
+Now playing and the song context menu open a native view immediately. Opening
+that view, following a recording, and the lookup made ahead of time for the
+playing song ask the provider for metadata. Once a song has been the playing
+one for two seconds, the app hands it to the backend, which looks it up and
+then resolves the pictures the view draws before any scrolling: the header
+when the song has no Spotify cover, the first eight contributors, and the
+first six rows of each list. A newer song cancels that task; a metered
+connection, offline mode, a podcast or a local file starts none. Answers go
+to an app-side cache (16 lookups and 512 pictures, one hour each), so a view
+of a song looked up ahead of time, or seen before, opens filled in without a
+request. Failures are not kept.
 It searches by ISRC when available, falling back to an escaped query for the
 title and the first credited artist if that returns nothing, then to the title
 without a version suffix Spotify adds, such as " - Remastered 2011", if that
@@ -324,12 +333,18 @@ An unavailable portrait or cover leaves the placeholder visible without failing
 the view.
 
 Requests run on the backend runtime, use the configured proxy, carry a
-contactable Spotifast User-Agent, and carry no Spotify authorization. A shared
-mutex spaces requests at least 1.1 seconds apart, including cancelled tasks.
+contactable Spotifast User-Agent, and carry no Spotify authorization.
+MusicBrainz requests start at least 1.1 seconds apart, including cancelled
+tasks; only the start is spaced, so a slow answer does not hold up the next
+request. A request for an open view takes the next turn before any request
+made ahead of time, and only one request made ahead of time waits for a turn
+at once. The other hosts take at most two requests at a time, unspaced. Two
+asks for the same URL send one request: the second waits for the first
+answer.
 A 429 or 503 preserves Retry-After (seconds or HTTP date), with a one-minute
 fallback, and shows a retryable error without an automatic retry loop. Each
 request times out after 20 seconds and response bodies are capped at 2 MiB.
-The same serialized, bounded transport and in-memory cache handle image metadata
+The same bounded transport and in-memory cache handle image metadata
 from MusicBrainz, `open.spotify.com`, `www.wikidata.org` and
 `commons.wikimedia.org`. Visible targets are resolved once per view, including
 missing images. Image files use the
@@ -337,8 +352,10 @@ existing asynchronous artwork loader, disk cache and memory budget. All follow
 the configured proxy without credentials or new API keys. The provider keeps
 at most 32 successful metadata responses in memory for one hour.
 There is no new state file or setting. Closing the view, choosing another
-recording, or signing out cancels its metadata and image lookup tasks. Request
-serials reject late results.
+recording, or signing out cancels its metadata and image lookup tasks; signing
+out also cancels the lookup made ahead of time and empties the app-side cache.
+Request serials reject late results, and a failure never replaces an answer
+the view already shows.
 **Find on Spotify** opens an ordinary in-app search, so a MusicBrainz result
 never automatically plays a potentially different Spotify recording.
 

@@ -3,7 +3,7 @@
 use anyhow::Result;
 use serde_json::Value;
 
-use super::{Provider, valid_id};
+use super::{Priority, Provider, valid_id};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Target {
@@ -19,7 +19,7 @@ pub struct Picture {
 }
 
 impl Provider {
-    pub async fn picture(&self, target: &Target) -> Result<Option<Picture>> {
+    pub async fn picture(&self, target: &Target, priority: Priority) -> Result<Option<Picture>> {
         match target {
             Target::Recording(id) if valid_id(id) => {
                 // Browse releases containing this exact recording, not a title match.
@@ -32,6 +32,7 @@ impl Provider {
                             ("limit", "100".into()),
                             ("fmt", "json".into()),
                         ],
+                        priority,
                     )
                     .await?;
                 Ok(release_picture(&value))
@@ -41,6 +42,7 @@ impl Provider {
                     .get(
                         &format!("artist/{id}"),
                         &[("inc", "url-rels".into()), ("fmt", "json".into())],
+                        priority,
                     )
                     .await?;
                 if value.get("id").and_then(Value::as_str) != Some(id) {
@@ -51,7 +53,7 @@ impl Provider {
                 if let Some(artist) = spotify_artist(&value) {
                     let mut url = reqwest::Url::parse("https://open.spotify.com/oembed")?;
                     url.query_pairs_mut().append_pair("url", &artist);
-                    if let Ok(preview) = self.get_url(url).await
+                    if let Ok(preview) = self.get_url(url, priority).await
                         && let Some(picture) = spotify_picture(&preview, &artist)
                     {
                         return Ok(Some(picture));
@@ -62,7 +64,7 @@ impl Provider {
                     return Ok(None);
                 };
                 let url = format!("https://www.wikidata.org/wiki/Special:EntityData/{entity}.json");
-                let value = self.get_url(url.parse()?).await?;
+                let value = self.get_url(url.parse()?, priority).await?;
                 let Some(filename) = portrait_filename(&value, &entity) else {
                     return Ok(None);
                 };
@@ -76,7 +78,7 @@ impl Provider {
                     ("format", "json"),
                     ("formatversion", "2"),
                 ]);
-                Ok(commons_picture(&self.get_url(url).await?))
+                Ok(commons_picture(&self.get_url(url, priority).await?))
             }
             _ => Ok(None),
         }

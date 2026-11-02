@@ -58,6 +58,29 @@ Spotifast connects only to the services below.
   local file, the file itself has lyrics for the song, Spotifast sends its
   artist, title, album and length to [lrclib.net](https://lrclib.net).
   Nothing identifying you is included.
+- **MusicBrainz.** For **Sample connections**, Spotifast sends the playing
+  song's ISRC, or its title and first artist, to
+  [musicbrainz.org](https://musicbrainz.org) once the song has played for two
+  seconds, so the view opens filled in. Songs skipped sooner are not sent, and
+  nothing is sent ahead of time on a metered connection, offline, or for
+  podcasts and local files. Opening the view for another song sends the same
+  details, and following a related recording sends its MusicBrainz ID.
+  Contributors' and recordings' MusicBrainz IDs are also sent to look up their
+  pictures. The [MusicBrainz privacy policy](https://metabrainz.org/privacy)
+  applies.
+- **Picture sources for Sample connections.** Release covers come from
+  [Cover Art Archive](https://coverartarchive.org), which serves the files from
+  the Internet Archive. A contributor's photo comes from the artist's public
+  Spotify page through Spotify's link-preview service (`open.spotify.com/oembed`),
+  or, when that has none, from the artist's [Wikidata](https://www.wikidata.org)
+  entry and [Wikimedia Commons](https://commons.wikimedia.org). These requests
+  carry only the MusicBrainz release ID, the Spotify artist link, or the
+  Wikidata and Commons file names that MusicBrainz lists.
+
+  None of these requests carry Spotify credentials or anything identifying
+  you beyond your IP address. They follow your proxy settings. Answers stay
+  in memory for an hour and pictures use the normal artwork cache; signing
+  out clears what is held in memory.
 - **GitHub.** Once a day, Spotifast asks GitHub for the latest release. You
   can turn automatic checks off in Settings. Downloading an update, and the
   first opening of MilkDrop, also fetch files from GitHub. No Spotify data is

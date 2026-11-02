@@ -570,6 +570,12 @@ pub struct App {
 
     pub dialog: Option<Dialog>,
     sample_request: u64,
+    /// Sample connections answers kept so a view opens filled in.
+    sample_cache: crate::sample_connections::Cache,
+    /// The song last handed to the backend to look up ahead of time.
+    sample_prefetched: Option<String>,
+    /// Pictures looked up ahead of time whose files are not downloaded yet.
+    sample_art: Vec<String>,
     cover_request: u64,
     cover_uploads: HashMap<String, u64>,
     /// Successful uploads stay visible while Spotify propagates the new image.
@@ -1199,6 +1205,9 @@ impl App {
             accent_pending: HashSet::new(),
             dialog: None,
             sample_request: 0,
+            sample_cache: Default::default(),
+            sample_prefetched: None,
+            sample_art: Vec::new(),
             cover_request: 0,
             cover_uploads: HashMap::new(),
             uploaded_covers: Default::default(),
@@ -2593,16 +2602,43 @@ impl App {
                     }
                     Err(error) => log::warn!("rootlist unavailable: {error}"),
                 },
-                Event::SampleConnections { request, result } => {
+                Event::SampleConnections {
+                    request,
+                    query,
+                    result,
+                } => {
+                    if let Ok(found) = &result {
+                        self.sample_cache.keep_found(query, found.clone());
+                    }
                     if let Some(Dialog::SampleConnections(view)) = &mut self.dialog {
                         view.receive(request, result);
                     }
+                }
+                Event::SamplePrefetched { query, found } => {
+                    // A view opened before this answer came is filled in by it.
+                    if let Some(Dialog::SampleConnections(view)) = &mut self.dialog
+                        && view.query == query
+                        && matches!(view.result, Loadable::Loading)
+                    {
+                        view.receive(view.request, Ok(found.clone()));
+                    }
+                    self.sample_cache.keep_found(query, found);
                 }
                 Event::SamplePicture {
                     request,
                     target,
                     picture,
+                    answered,
                 } => {
+                    if answered {
+                        if request.is_none()
+                            && let Some(picture) = &picture
+                        {
+                            self.sample_art.push(picture.url.clone());
+                        }
+                        self.sample_cache
+                            .keep_picture(target.clone(), picture.clone());
+                    }
                     if let Some(Dialog::SampleConnections(view)) = &mut self.dialog {
                         view.receive_picture(request, target, picture);
                     }
@@ -3040,19 +3076,68 @@ impl App {
         history: Vec<crate::sample_connections::Query>,
     ) {
         self.sample_request = self.sample_request.wrapping_add(1);
+        // An answer already here, looked up ahead of time or seen before,
+        // opens the view filled in with no request at all.
+        let known = self.sample_cache.found(&query).cloned();
+        if known.is_none() {
+            self.backend.send(Command::SampleConnections {
+                request: self.sample_request,
+                query: query.clone(),
+            });
+        }
         self.dialog = Some(Dialog::SampleConnections(Box::new(
             crate::sample_connections::View {
                 request: self.sample_request,
-                query: query.clone(),
+                query,
                 history,
-                result: Loadable::Loading,
-                pictures: Default::default(),
+                result: known.map_or(Loadable::Loading, Loadable::Loaded),
+                pictures: self.sample_cache.pictures(),
             },
         )));
-        self.backend.send(Command::SampleConnections {
-            request: self.sample_request,
-            query,
-        });
+    }
+
+    /// Hands the playing song to the backend to look up ahead of time, once
+    /// per song, and starts downloading the pictures that lookup found. The
+    /// lookup waits behind every open view's request and costs this frame a
+    /// string comparison.
+    fn prefetch_sample_connections(&mut self, ctx: &egui::Context) {
+        if !self.sample_art.is_empty() && !self.downloads_wait() {
+            for url in std::mem::take(&mut self.sample_art) {
+                self.backend.art().prefetch(ctx, &url);
+            }
+        }
+        let Some(now) = &self.frame_now else {
+            return;
+        };
+        if self.sample_prefetched.as_deref() == Some(now.uri.as_str())
+            || now.is_episode
+            || self.offline
+            || self.user.is_none()
+            || self.downloads_wait()
+        {
+            return;
+        }
+        let track = match &self.queue {
+            Loadable::Loaded(queue) => match &queue.currently_playing {
+                Some(crate::api::models::PlayableItem::Track(track)) if track.uri == now.uri => {
+                    Some(track)
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+        .or_else(|| now.id.as_ref().and_then(|id| self.track_cache.get(id)));
+        // Without the full song there is no ISRC yet; a later frame has it.
+        let Some(track) = track else {
+            return;
+        };
+        let query = crate::sample_connections::Query::from_track(track);
+        self.sample_prefetched = Some(now.uri.clone());
+        if let Some(query) = query
+            && self.sample_cache.found(&query).is_none()
+        {
+            self.backend.send(Command::PrefetchSampleConnections(query));
+        }
     }
 
     /// Clears account data while preserving request serials that reject late answers.
@@ -3061,6 +3146,9 @@ impl App {
             self.dialog = None;
         }
         self.backend.send(Command::CancelSampleConnections);
+        self.sample_cache.clear();
+        self.sample_prefetched = None;
+        self.sample_art.clear();
         self.pending_remote_volume = None;
         self.local_transfer_sequence = None;
         self.queue_start_pending = None;
@@ -13079,6 +13167,7 @@ impl App {
         }
         self.refresh_frame_now();
         self.sync_media_controls(ctx);
+        self.prefetch_sample_connections(ctx);
 
         if !self.toasts.is_empty() {
             ctx.request_repaint_after(TOAST_FRAME);
@@ -32111,5 +32200,132 @@ mod tests {
         let server_err =
             widgets::sanitize_error_message("500 Internal Server Error", Locale::English);
         assert_eq!(server_err.as_ref(), "500 Internal Server Error");
+    }
+
+    /// The playing song is looked up ahead of time once, after which its
+    /// view opens filled in, pictures included, with no request at all.
+    /// A failed retry never takes the shown answer away.
+    #[test]
+    fn sample_connections_open_filled_in_from_a_lookup_made_ahead_of_time() {
+        use crate::sample_connections::{Found, Query, images};
+        let ctx = egui::Context::default();
+        let mut app = headless_app();
+        app.user = Some(User {
+            id: "alice".into(),
+            ..Default::default()
+        });
+        let track = Track {
+            id: Some("rock".into()),
+            uri: "spotify:track:rock".into(),
+            name: "The Rockafeller Skank".into(),
+            duration_ms: 413_880,
+            ..Default::default()
+        };
+        app.track_cache.insert("rock".into(), track.clone());
+        let query = Query::from_track(&track).unwrap();
+        let mut now = NowPlaying {
+            local: true,
+            device_name: None,
+            device_kind: None,
+            uri: String::new(),
+            id: None,
+            title: String::new(),
+            artists: Vec::new(),
+            subtitle: String::new(),
+            album_name: String::new(),
+            album_id: None,
+            show_id: None,
+            art_url: None,
+            art_small: None,
+            duration_ms: 413_880,
+            position_ms: 0,
+            playing: true,
+            loading: false,
+            shuffle: false,
+            repeat: RepeatMode::Off,
+            volume_percent: 50,
+            can_control: true,
+            can_set_volume: true,
+            is_episode: false,
+            resuming: false,
+        };
+        now.uri = track.uri.clone();
+        now.id = track.id.clone();
+        now.is_episode = false;
+        app.backend.take_sample_lookups();
+        for _ in 0..3 {
+            app.frame_now = Some(now.clone());
+            app.prefetch_sample_connections(&ctx);
+        }
+        assert_eq!(
+            app.backend.take_sample_lookups(),
+            vec![(query.clone(), true)],
+            "one lookup ahead of time per song, however many frames"
+        );
+
+        let connections = crate::sample_connections::parse_connections(
+            &serde_json::from_str(include_str!("testdata/samples/rockafeller.json")).unwrap(),
+        )
+        .unwrap();
+        let portrait = images::Target::Artist(connections.contributors[0].id.clone());
+        let photo = images::Picture {
+            url: "https://i.scdn.co/image/ab676161portrait".into(),
+            source: "https://open.spotify.com/artist/x".into(),
+            credit: "Spotify".into(),
+        };
+        let unanswered = images::Target::Artist("unanswered".into());
+        app.handle_backend_events(vec![
+            Event::SamplePrefetched {
+                query: query.clone(),
+                found: Found::Connections(connections),
+            },
+            Event::SamplePicture {
+                request: None,
+                target: portrait.clone(),
+                picture: Some(photo.clone()),
+                answered: true,
+            },
+            Event::SamplePicture {
+                request: None,
+                target: unanswered.clone(),
+                picture: None,
+                answered: false,
+            },
+        ]);
+        app.apply(Action::SampleConnections(query.clone()), &ctx);
+        assert!(
+            app.backend.take_sample_lookups().is_empty(),
+            "the answer was here already"
+        );
+        let Some(Dialog::SampleConnections(view)) = &app.dialog else {
+            panic!("the view is open");
+        };
+        assert!(matches!(
+            view.result,
+            Loadable::Loaded(Found::Connections(_))
+        ));
+        assert_eq!(view.pictures.get(&portrait), Some(&Some(photo)));
+        assert!(
+            !view.pictures.contains_key(&unanswered),
+            "a failed lookup is asked again by the view"
+        );
+        let request = view.request;
+        app.handle_backend_events(vec![Event::SampleConnections {
+            request,
+            query: query.clone(),
+            result: Err("MusicBrainz is busy. Please try again later.".into()),
+        }]);
+        let Some(Dialog::SampleConnections(view)) = &app.dialog else {
+            panic!("the view stays open");
+        };
+        assert!(matches!(
+            view.result,
+            Loadable::Loaded(Found::Connections(_))
+        ));
+
+        // Signing out forgets what was looked up.
+        app.reset_data();
+        app.apply(Action::SampleConnections(query.clone()), &ctx);
+        assert_eq!(app.backend.take_sample_lookups(), vec![(query, false)]);
     }
 }

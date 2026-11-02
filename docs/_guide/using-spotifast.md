@@ -203,15 +203,20 @@ or versions match, choose the correct recording from the displayed candidates.
 This view covers recording samples, not interpolations, and does not provide
 sample timestamps, collaborator counts, or play counts.
 
-Opening the view sends the song's ISRC, or its title and artist, to
-[musicbrainz.org](https://musicbrainz.org). Following a recording sends its
+So that the view opens filled in, Spotifast looks up the playing song once it
+has played for two seconds, sending its ISRC, or its title and artist, to
+[musicbrainz.org](https://musicbrainz.org), and fetches the pictures the view
+shows first. Songs you skip within two seconds are not looked up, and nothing
+is looked up ahead of time on a metered connection. This lookup waits behind
+anything an open view asks for. Opening the view for any other song sends the
+same details. Following a recording sends its
 MusicBrainz ID. Visible artwork also looks up the recording's releases or the
 artist's linked Spotify profile (through its public link-preview API), or a
 linked Wikidata entry and Wikimedia Commons photo information.
 Image files come from Cover Art Archive (and its Internet Archive storage),
 Spotify, and Wikimedia. These requests follow your proxy settings and send no
-Spotify credentials. Nothing is requested merely because the card is visible.
-Metadata stays in memory for one hour. Image files use the normal artwork cache.
+Spotify credentials. Metadata and the pictures found stay in memory for one
+hour, so opening the view again shows them at once. Image files use the normal artwork cache.
 
 ## Viewing cover artwork
 

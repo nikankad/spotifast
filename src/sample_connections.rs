@@ -1,11 +1,13 @@
 //! On-demand recording sample relationships from MusicBrainz, never audio.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify, Semaphore};
 use tokio::time::Instant;
 
 use crate::api::models::Track;
@@ -162,25 +164,121 @@ impl View {
         belongs
     }
 
+    /// A picture looked up ahead of time (`request` is `None`) fills any
+    /// view that is waiting for it.
     pub fn receive_picture(
         &mut self,
-        request: u64,
+        request: Option<u64>,
         target: images::Target,
         picture: Option<images::Picture>,
     ) {
-        if request == self.request
+        if request.is_none_or(|request| request == self.request)
             && let Some(entry) = self.pictures.get_mut(&target)
+            && entry.is_none()
         {
             *entry = picture;
         }
     }
 
-    /// A completion cannot reopen a dismissed dialog or replace a newer song.
+    /// A completion cannot reopen a dismissed dialog or replace a newer song,
+    /// and a failure never takes away an answer the view already shows.
     pub fn receive(&mut self, request: u64, result: Result<Found, String>) {
-        if self.request == request {
+        if self.request == request
+            && !(result.is_err() && matches!(self.result, Loadable::Loaded(_)))
+        {
             self.result = Loadable::from_result(result);
         }
     }
+}
+
+/// How long the app keeps an answer for the next look.
+const KEEP: Duration = Duration::from_secs(3600);
+const KEEP_FOUND: usize = 16;
+const KEEP_PICTURES: usize = 512;
+
+/// Answers kept on the app side, so a view opens filled in: one looked up
+/// ahead of time for the playing song, or one seen before. Only answers are
+/// kept, never failures, which the next look asks for again.
+#[derive(Default)]
+pub struct Cache {
+    found: VecDeque<(std::time::Instant, Query, Found)>,
+    pictures: HashMap<images::Target, (std::time::Instant, Option<images::Picture>)>,
+}
+
+impl Cache {
+    pub fn found(&self, query: &Query) -> Option<&Found> {
+        self.found
+            .iter()
+            .find(|(at, kept, _)| kept == query && at.elapsed() < KEEP)
+            .map(|(_, _, found)| found)
+    }
+
+    pub fn keep_found(&mut self, query: Query, found: Found) {
+        self.found
+            .retain(|(at, kept, _)| *kept != query && at.elapsed() < KEEP);
+        if self.found.len() == KEEP_FOUND {
+            self.found.pop_front();
+        }
+        self.found
+            .push_back((std::time::Instant::now(), query, found));
+    }
+
+    pub fn keep_picture(&mut self, target: images::Target, picture: Option<images::Picture>) {
+        if self.pictures.len() >= KEEP_PICTURES {
+            self.pictures.retain(|_, (at, _)| at.elapsed() < KEEP);
+        }
+        if self.pictures.len() >= KEEP_PICTURES
+            && let Some(oldest) = self
+                .pictures
+                .iter()
+                .min_by_key(|(_, (at, _))| *at)
+                .map(|(target, _)| target.clone())
+        {
+            self.pictures.remove(&oldest);
+        }
+        self.pictures
+            .insert(target, (std::time::Instant::now(), picture));
+    }
+
+    /// Every picture still fresh, resolved or known to be missing, for a new view.
+    pub fn pictures(&self) -> HashMap<images::Target, Option<images::Picture>> {
+        self.pictures
+            .iter()
+            .filter(|(_, (at, _))| at.elapsed() < KEEP)
+            .map(|(target, (_, picture))| (target.clone(), picture.clone()))
+            .collect()
+    }
+
+    pub fn clear(&mut self) {
+        self.found.clear();
+        self.pictures.clear();
+    }
+}
+
+/// The pictures a view shows before any scrolling, in the order it draws
+/// them: the header when the song has no Spotify cover, the contributors,
+/// then the first rows of each list.
+pub fn first_pictures(query: &Query, connections: &Connections) -> Vec<images::Target> {
+    let mut targets = Vec::new();
+    if !matches!(query, Query::Song { cover: Some(_), .. }) {
+        targets.push(images::Target::Recording(connections.recording.id.clone()));
+    }
+    targets.extend(
+        connections
+            .contributors
+            .iter()
+            .take(8)
+            .map(|artist| images::Target::Artist(artist.id.clone())),
+    );
+    targets.extend(
+        connections
+            .samples_from
+            .iter()
+            .take(6)
+            .chain(connections.sampled_by.iter().take(6))
+            .map(|recording| images::Target::Recording(recording.id.clone())),
+    );
+    targets
 }
 
 struct Cached {
@@ -189,16 +287,33 @@ struct Cached {
     value: Value,
 }
 
-struct State {
-    next_request: Instant,
-    cache: VecDeque<Cached>,
+/// Who is waiting for an answer. A view the listener has open goes first;
+/// a lookup made ahead of time waits for every open view's request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Priority {
+    Now,
+    Later,
 }
 
-/// One provider per backend. The mutex also serializes requests and preserves
-/// the cooldown when a dialog's task is cancelled or a new song is selected.
+/// One provider per backend. MusicBrainz asks for one request a second, so
+/// its requests start at least 1.1 seconds apart, and the spacing survives a
+/// cancelled view or a new song. Only the start is spaced: a slow answer
+/// does not hold up the next request. Image hosts have no such limit and
+/// take at most two requests at a time.
 pub struct Provider {
     http: Http,
-    state: Mutex<State>,
+    /// When the next MusicBrainz request may start.
+    next_request: Mutex<Instant>,
+    /// Requests for an open view waiting for their MusicBrainz turn.
+    urgent: AtomicUsize,
+    turn_taken: Notify,
+    /// Only one lookup made ahead of time queues for a turn at once, so an
+    /// open view's request is never behind more than one of them.
+    later: Mutex<()>,
+    others: Semaphore,
+    /// One fetch per URL at a time: a second asker waits and reads the cache.
+    in_flight: std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    cache: std::sync::Mutex<VecDeque<Cached>>,
     root: String,
 }
 
@@ -206,36 +321,120 @@ impl Provider {
     pub fn new(http: Http) -> Self {
         Self {
             http,
-            state: Mutex::new(State {
-                next_request: Instant::now(),
-                cache: VecDeque::new(),
-            }),
+            next_request: Mutex::new(Instant::now()),
+            urgent: AtomicUsize::new(0),
+            turn_taken: Notify::new(),
+            later: Mutex::new(()),
+            others: Semaphore::new(2),
+            in_flight: std::sync::Mutex::new(HashMap::new()),
+            cache: std::sync::Mutex::new(VecDeque::new()),
             root: ROOT.into(),
         }
     }
 
-    async fn get(&self, id: &str, query: &[(&str, String)]) -> Result<Value> {
+    async fn get(&self, id: &str, query: &[(&str, String)], priority: Priority) -> Result<Value> {
         let mut url = reqwest::Url::parse(&format!("{}{id}", self.root))?;
         url.query_pairs_mut().extend_pairs(query);
-        self.get_url(url).await
+        self.get_url(url, priority).await
     }
 
-    async fn get_url(&self, url: reqwest::Url) -> Result<Value> {
+    fn cached(&self, key: &str) -> Option<Value> {
+        let mut cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
+        cache.retain(|entry| entry.at.elapsed() < CACHE_LIFETIME);
+        cache
+            .iter()
+            .find(|entry| entry.key == key)
+            .map(|entry| entry.value.clone())
+    }
+
+    async fn get_url(&self, url: reqwest::Url, priority: Priority) -> Result<Value> {
         let key = url.to_string();
-        let mut state = self.state.lock().await;
-        state
-            .cache
-            .retain(|entry| entry.at.elapsed() < CACHE_LIFETIME);
-        if let Some(cached) = state.cache.iter().find(|entry| entry.key == key) {
-            return Ok(cached.value.clone());
+        if let Some(value) = self.cached(&key) {
+            return Ok(value);
         }
-        if state.next_request.saturating_duration_since(Instant::now()) > Duration::from_secs(5) {
-            bail!("MusicBrainz is busy. Please try again later.");
+        let lock = Arc::clone(
+            self.in_flight
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .entry(key.clone())
+                .or_default(),
+        );
+        let result = {
+            let _fetching = lock.lock().await;
+            match self.cached(&key) {
+                Some(value) => Ok(value),
+                None => self.fetch_url(url, &key, priority).await,
+            }
+        };
+        let mut in_flight = self.in_flight.lock().unwrap_or_else(|p| p.into_inner());
+        if in_flight
+            .get(&key)
+            .is_some_and(|held| Arc::ptr_eq(held, &lock))
+            && Arc::strong_count(&lock) == 2
+        {
+            in_flight.remove(&key);
         }
-        tokio::time::sleep_until(state.next_request).await;
+        result
+    }
+
+    /// Waits for the next MusicBrainz turn and claims it. A request made
+    /// ahead of time never holds the turn while it waits, so a request for
+    /// an open view arriving meanwhile goes first.
+    async fn musicbrainz_turn(&self, priority: Priority) -> Result<()> {
+        let busy = || anyhow::anyhow!("MusicBrainz is busy. Please try again later.");
+        let mut next = match priority {
+            Priority::Now => {
+                self.urgent.fetch_add(1, Ordering::SeqCst);
+                let next = self.next_request.lock().await;
+                self.urgent.fetch_sub(1, Ordering::SeqCst);
+                self.turn_taken.notify_waiters();
+                let wait = next.saturating_duration_since(Instant::now());
+                if wait > Duration::from_secs(5) {
+                    return Err(busy());
+                }
+                tokio::time::sleep(wait).await;
+                next
+            }
+            Priority::Later => loop {
+                let taken = self.turn_taken.notified();
+                if self.urgent.load(Ordering::SeqCst) > 0 {
+                    taken.await;
+                    continue;
+                }
+                let next = self.next_request.lock().await;
+                let wait = next.saturating_duration_since(Instant::now());
+                if wait.is_zero() && self.urgent.load(Ordering::SeqCst) == 0 {
+                    break next;
+                }
+                if wait > Duration::from_secs(5) {
+                    return Err(busy());
+                }
+                drop(next);
+                tokio::select! {
+                    () = tokio::time::sleep(wait) => {}
+                    () = taken => {}
+                }
+            },
+        };
+        *next = Instant::now() + Duration::from_millis(1100);
+        Ok(())
+    }
+
+    async fn fetch_url(&self, url: reqwest::Url, key: &str, priority: Priority) -> Result<Value> {
+        let musicbrainz = key.starts_with(&self.root);
+        let _later = match priority {
+            Priority::Later => Some(self.later.lock().await),
+            Priority::Now => None,
+        };
+        let _permit = if musicbrainz {
+            self.musicbrainz_turn(priority).await?;
+            None
+        } else {
+            Some(self.others.acquire().await?)
+        };
+        drop(_later);
         // Resolve the client after waiting, so proxy changes apply immediately.
         let client = self.http.client().map_err(anyhow::Error::msg)?;
-        state.next_request = Instant::now() + Duration::from_millis(1100);
         let mut response = client
             .get(url)
             .header(
@@ -251,11 +450,13 @@ impl Provider {
             .await
             .map_err(|error| error.without_url())?;
         if matches!(response.status().as_u16(), 429 | 503) {
-            let cooldown = retry_after(response.headers());
-            // An unrepresentable delay must not overflow or cause a retry storm.
-            state.next_request = Instant::now()
-                .checked_add(cooldown.max(Duration::from_millis(1100)))
-                .unwrap_or_else(|| Instant::now() + Duration::from_secs(86400 * 365));
+            if musicbrainz {
+                let cooldown = retry_after(response.headers());
+                // An unrepresentable delay must not overflow or cause a retry storm.
+                *self.next_request.lock().await = Instant::now()
+                    .checked_add(cooldown.max(Duration::from_millis(1100)))
+                    .unwrap_or_else(|| Instant::now() + Duration::from_secs(86400 * 365));
+            }
             bail!("MusicBrainz is busy. Please try again later.");
         }
         response
@@ -269,18 +470,19 @@ impl Provider {
             body.extend_from_slice(&chunk);
         }
         let value: Value = serde_json::from_slice(&body).context("Invalid MusicBrainz response")?;
-        if state.cache.len() == 32 {
-            state.cache.pop_front();
+        let mut cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
+        if cache.len() == 32 {
+            cache.pop_front();
         }
-        state.cache.push_back(Cached {
-            key,
+        cache.push_back(Cached {
+            key: key.to_owned(),
             at: Instant::now(),
             value: value.clone(),
         });
         Ok(value)
     }
 
-    pub async fn fetch(&self, query: &Query) -> Result<Found> {
+    pub async fn fetch(&self, query: &Query, priority: Priority) -> Result<Found> {
         let recording = match query {
             Query::Recording(recording) => recording.clone(),
             Query::Song {
@@ -294,7 +496,7 @@ impl Provider {
                 let mut candidates = Vec::new();
                 // ISRCs are helpful but sometimes reused for multiple edits.
                 if let Some(isrc) = isrc.as_deref().filter(|s| valid_isrc(s)) {
-                    candidates = self.search(&format!("isrc:{isrc}")).await?;
+                    candidates = self.search(&format!("isrc:{isrc}"), priority).await?;
                 }
                 let search_artist = if first_artist.is_empty() {
                     artist
@@ -314,11 +516,14 @@ impl Provider {
                         break;
                     }
                     candidates = self
-                        .search(&format!(
-                            "recording:\"{}\" AND artist:\"{}\"",
-                            escape_search(search_title),
-                            escape_search(search_artist)
-                        ))
+                        .search(
+                            &format!(
+                                "recording:\"{}\" AND artist:\"{}\"",
+                                escape_search(search_title),
+                                escape_search(search_artist)
+                            ),
+                            priority,
+                        )
                         .await?;
                 }
                 let exact: Vec<_> = candidates
@@ -353,6 +558,7 @@ impl Provider {
                     ),
                     ("fmt", "json".into()),
                 ],
+                priority,
             )
             .await?;
         let connections = parse_connections(&value)?;
@@ -362,7 +568,7 @@ impl Provider {
         Ok(Found::Connections(connections))
     }
 
-    async fn search(&self, query: &str) -> Result<Vec<Recording>> {
+    async fn search(&self, query: &str, priority: Priority) -> Result<Vec<Recording>> {
         let value = self
             .get(
                 "recording/",
@@ -371,6 +577,7 @@ impl Provider {
                     ("limit", "25".into()),
                     ("fmt", "json".into()),
                 ],
+                priority,
             )
             .await?;
         let results = value
@@ -758,15 +965,15 @@ mod tests {
             source: "https://musicbrainz.org/release/source".into(),
             credit: "Cover Art Archive".into(),
         };
-        view.receive_picture(6, target.clone(), Some(photo.clone()));
+        view.receive_picture(Some(6), target.clone(), Some(photo.clone()));
         assert!(view.pictures[&target].is_none());
-        view.receive_picture(7, other.clone(), Some(photo.clone()));
+        view.receive_picture(Some(7), other.clone(), Some(photo.clone()));
         assert!(!view.pictures.contains_key(&other));
-        view.receive_picture(7, target.clone(), Some(photo.clone()));
+        view.receive_picture(Some(7), target.clone(), Some(photo.clone()));
         assert_eq!(view.pictures[&target], Some(photo));
         // A missing portrait is a completed lookup, not a request every frame.
         assert!(view.request_picture(7, &other));
-        view.receive_picture(7, other.clone(), None);
+        view.receive_picture(Some(7), other.clone(), None);
         assert!(!view.request_picture(7, &other));
         assert!(matches!(
             view.result,
@@ -782,9 +989,16 @@ mod tests {
         }]}))])
         .await;
         let target = images::Target::Recording("7da4bc62-6876-4f21-9f01-1c79967df855".into());
-        let first = provider.picture(&target).await.unwrap().unwrap();
+        let first = provider
+            .picture(&target, Priority::Now)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(first.url.ends_with(&format!("{id}/front-250")));
-        assert_eq!(provider.picture(&target).await.unwrap(), Some(first));
+        assert_eq!(
+            provider.picture(&target, Priority::Now).await.unwrap(),
+            Some(first)
+        );
         let requests = task.await.unwrap();
         assert!(
             requests[0]
@@ -795,7 +1009,7 @@ mod tests {
         let provider = Provider::new(Http::unavailable("must not connect".into()));
         assert!(
             provider
-                .picture(&images::Target::Artist("../../other".into()))
+                .picture(&images::Target::Artist("../../other".into()), Priority::Now)
                 .await
                 .unwrap()
                 .is_none()
@@ -888,7 +1102,7 @@ mod tests {
             cover: None,
         };
         assert_eq!(
-            provider.fetch(&query).await.unwrap(),
+            provider.fetch(&query, Priority::Now).await.unwrap(),
             Found::Candidates(Vec::new())
         );
         let requests = task.await.unwrap();
@@ -913,11 +1127,14 @@ mod tests {
             ok(album),
         ])
         .await;
-        let result = provider.fetch(&song()).await.unwrap();
+        let result = provider.fetch(&song(), Priority::Now).await.unwrap();
         assert!(
             matches!(&result, Found::Connections(c) if c.recording.id == "4e5f16e7-330e-4459-aa30-71a7aabac392")
         );
-        assert_eq!(provider.fetch(&song()).await.unwrap(), result);
+        assert_eq!(
+            provider.fetch(&song(), Priority::Now).await.unwrap(),
+            result
+        );
         let requests = task.await.unwrap();
         assert!(
             requests[1]
@@ -943,7 +1160,7 @@ mod tests {
             }
             let (provider, task) = server(vec![ok(json!({"recordings": [first, second]}))]).await;
             assert!(
-                matches!(provider.fetch(&song()).await.unwrap(), Found::Candidates(c) if c.len() == 2)
+                matches!(provider.fetch(&song(), Priority::Now).await.unwrap(), Found::Candidates(c) if c.len() == 2)
             );
             task.await.unwrap();
         }
@@ -952,11 +1169,11 @@ mod tests {
     #[tokio::test]
     async fn busy_service_preserves_cooldown_without_retrying_or_caching_failure() {
         let (provider, task) = server(vec!["HTTP/1.1 503 Busy\r\nRetry-After: 120\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into()]).await;
-        assert!(provider.fetch(&song()).await.is_err());
+        assert!(provider.fetch(&song(), Priority::Now).await.is_err());
         task.await.unwrap();
-        let state = provider.state.lock().await;
-        assert!(state.next_request.duration_since(Instant::now()) > Duration::from_secs(115));
-        assert!(state.cache.is_empty());
+        let next = *provider.next_request.lock().await;
+        assert!(next.duration_since(Instant::now()) > Duration::from_secs(115));
+        assert!(provider.cache.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -967,9 +1184,85 @@ mod tests {
                 body.len()
             );
             let (provider, task) = server(vec![response]).await;
-            assert!(provider.fetch(&song()).await.is_err());
+            assert!(provider.fetch(&song(), Priority::Now).await.is_err());
             task.await.unwrap();
         }
+    }
+
+    /// An open view's request goes before a lookup made ahead of time that
+    /// was waiting longer, and the turns stay spaced.
+    #[tokio::test]
+    async fn open_views_go_before_lookups_made_ahead_of_time() {
+        let answer = |n: u32| ok(json!({"n": n}));
+        let (provider, task) = server(vec![answer(0), answer(1), answer(2)]).await;
+        let provider = Arc::new(provider);
+        provider.get("first", &[], Priority::Now).await.unwrap();
+        let later = tokio::spawn({
+            let provider = Arc::clone(&provider);
+            async move { provider.get("later", &[], Priority::Later).await }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let now = provider.get("now", &[], Priority::Now).await.unwrap();
+        later.await.unwrap().unwrap();
+        assert_eq!(now["n"], 1);
+        let requests = task.await.unwrap();
+        assert!(requests[1].0.starts_with("GET /now"));
+        assert!(requests[2].0.starts_with("GET /later"));
+        for pair in requests.windows(2) {
+            assert!(pair[1].1.duration_since(pair[0].1) >= Duration::from_secs(1));
+        }
+    }
+
+    /// A view opened while the same lookup is on its way ahead of time
+    /// waits for that answer instead of asking again.
+    #[tokio::test]
+    async fn the_same_request_is_sent_once_however_many_ask() {
+        let (provider, task) = server(vec![ok(json!({"n": 1}))]).await;
+        let (a, b) = tokio::join!(
+            provider.get("same", &[], Priority::Later),
+            provider.get("same", &[], Priority::Now)
+        );
+        assert_eq!(a.unwrap(), b.unwrap());
+        assert_eq!(task.await.unwrap().len(), 1);
+        assert!(provider.in_flight.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_app_keeps_answers_and_names_the_first_pictures_in_drawing_order() {
+        let connections = parse_connections(&rockafeller()).unwrap();
+        let recording = Query::Recording(connections.recording.clone());
+        let mut cache = Cache::default();
+        assert!(cache.found(&recording).is_none());
+        cache.keep_found(recording.clone(), Found::Candidates(Vec::new()));
+        cache.keep_found(recording.clone(), Found::Connections(connections.clone()));
+        assert!(matches!(
+            cache.found(&recording),
+            Some(Found::Connections(_))
+        ));
+        let target = images::Target::Artist("a".into());
+        cache.keep_picture(target.clone(), None);
+        assert_eq!(cache.pictures().get(&target), Some(&None));
+        cache.clear();
+        assert!(cache.found(&recording).is_none() && cache.pictures().is_empty());
+
+        let targets = first_pictures(&recording, &connections);
+        assert_eq!(
+            targets[0],
+            images::Target::Recording(connections.recording.id.clone())
+        );
+        assert_eq!(
+            targets[1],
+            images::Target::Artist(connections.contributors[0].id.clone())
+        );
+        let mut with_cover = song();
+        if let Query::Song { cover, .. } = &mut with_cover {
+            *cover = Some("https://i.scdn.co/image/cover".into());
+        }
+        // A Spotify cover heads the view, so no recording cover is needed.
+        assert!(
+            !first_pictures(&with_cover, &connections)
+                .contains(&images::Target::Recording(connections.recording.id.clone()))
+        );
     }
 
     #[test]

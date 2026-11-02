@@ -36,6 +36,9 @@ pub type ApiResult<T> = Result<T, ApiError>;
 
 const PREMIUM_NEEDED: &str = "Local playback needs Spotify Premium.";
 const ALBUM_TYPE_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a song plays before its sample connections are looked up ahead
+/// of time. Skipping through songs looks none of them up.
+const SAMPLE_PREFETCH_DELAY: Duration = Duration::from_secs(2);
 // Leave time for access-point retries plus resolver and authentication work.
 const ENGINE_CONNECT_TIMEOUT: Duration = Duration::from_secs(75);
 // Keep at most one full Web API album page outstanding for a playback engine.
@@ -710,6 +713,9 @@ pub enum Command {
         request: u64,
         target: crate::sample_connections::images::Target,
     },
+    /// Looks the playing song up ahead of time, behind every open view's
+    /// request, so its view opens filled in. A newer song replaces it.
+    PrefetchSampleConnections(crate::sample_connections::Query),
     OpenThemesFolder,
     /// Read or change the login registration, off the UI thread: it reads
     /// and writes a file, the registry or D-Bus, and the Flatpak portal may
@@ -974,14 +980,22 @@ pub struct LyricsRequest {
 }
 
 pub enum Event {
+    /// `request` is `None` for a picture looked up ahead of time. `answered`
+    /// is false when the lookup failed, so the missing picture is not kept.
     SamplePicture {
-        request: u64,
+        request: Option<u64>,
         target: crate::sample_connections::images::Target,
         picture: Option<crate::sample_connections::images::Picture>,
+        answered: bool,
     },
     SampleConnections {
         request: u64,
+        query: crate::sample_connections::Query,
         result: Result<crate::sample_connections::Found, String>,
+    },
+    SamplePrefetched {
+        query: crate::sample_connections::Query,
+        found: crate::sample_connections::Found,
     },
     /// The folder picked in the local files dialog; `None` when cancelled.
     LocalFilesFolderChosen(Option<std::path::PathBuf>),
@@ -1187,6 +1201,9 @@ pub struct Backend {
     playlist_item_requests: std::sync::Mutex<Vec<(String, u32, u64)>>,
     #[cfg(test)]
     playlist_sample_requests: std::sync::Mutex<Vec<(String, u32, u64)>>,
+    /// Sample connections lookups sent, `true` for one made ahead of time.
+    #[cfg(test)]
+    sample_lookups: std::sync::Mutex<Vec<(crate::sample_connections::Query, bool)>>,
     #[cfg(test)]
     playlist_add_requests: std::sync::Mutex<Vec<ApiRequest>>,
     #[cfg(test)]
@@ -1287,6 +1304,8 @@ impl Backend {
             #[cfg(test)]
             playlist_sample_requests: std::sync::Mutex::new(Vec::new()),
             #[cfg(test)]
+            sample_lookups: std::sync::Mutex::new(Vec::new()),
+            #[cfg(test)]
             playlist_add_requests: std::sync::Mutex::new(Vec::new()),
             #[cfg(test)]
             remote_play_requests: std::sync::Mutex::new(Vec::new()),
@@ -1328,6 +1347,18 @@ impl Backend {
     }
 
     pub fn send(&self, command: Command) {
+        #[cfg(test)]
+        if let Command::SampleConnections { query, .. }
+        | Command::PrefetchSampleConnections(query) = &command
+        {
+            self.sample_lookups
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push((
+                    query.clone(),
+                    matches!(command, Command::PrefetchSampleConnections(_)),
+                ));
+        }
         #[cfg(test)]
         if let Command::StoreLibraryCache(cache) = &command {
             self.library_cache_stores
@@ -1558,6 +1589,16 @@ impl Backend {
         std::mem::take(
             &mut *self
                 .playlist_item_requests
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
+    }
+
+    #[cfg(test)]
+    pub fn take_sample_lookups(&self) -> Vec<(crate::sample_connections::Query, bool)> {
+        std::mem::take(
+            &mut *self
+                .sample_lookups
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()),
         )
@@ -1853,6 +1894,7 @@ struct Worker {
     sample_connections: Arc<crate::sample_connections::Provider>,
     sample_task: Option<tokio::task::JoinHandle<()>>,
     sample_images: tokio::task::JoinSet<()>,
+    sample_prefetch: Option<tokio::task::JoinHandle<()>>,
     /// Friends' names and avatars and their playlists' names, kept between
     /// Friend activity polls.
     friend_names: Arc<tokio::sync::Mutex<session_reads::FriendNames>>,
@@ -1986,6 +2028,7 @@ impl Worker {
             http,
             sample_task: None,
             sample_images: tokio::task::JoinSet::new(),
+            sample_prefetch: None,
             friend_names: Arc::default(),
             art,
             events,
@@ -2655,10 +2698,14 @@ impl Worker {
                     let waker = self.waker.clone();
                     self.sample_task = Some(tokio::spawn(async move {
                         let result = provider
-                            .fetch(&query)
+                            .fetch(&query, crate::sample_connections::Priority::Now)
                             .await
                             .map_err(|error| format!("{error:#}"));
-                        let _ = events.send(Event::SampleConnections { request, result });
+                        let _ = events.send(Event::SampleConnections {
+                            request,
+                            query,
+                            result,
+                        });
                         waker.wake();
                     }));
                 }
@@ -2670,14 +2717,20 @@ impl Worker {
                     let waker = self.waker.clone();
                     self.sample_images.spawn(async move {
                         // Missing artwork never replaces the recording's metadata with an error.
-                        let picture = provider.picture(&target).await.ok().flatten();
+                        let picture = provider
+                            .picture(&target, crate::sample_connections::Priority::Now)
+                            .await;
                         let _ = events.send(Event::SamplePicture {
-                            request,
+                            request: Some(request),
                             target,
-                            picture,
+                            answered: picture.is_ok(),
+                            picture: picture.ok().flatten(),
                         });
                         waker.wake();
                     });
+                }
+                Command::PrefetchSampleConnections(query) => {
+                    self.prefetch_sample_connections(query)
                 }
                 Command::Lyrics(request) => self.fetch_lyrics(*request),
                 Command::Rootlist => self.fetch_rootlist(),
@@ -3437,6 +3490,9 @@ impl Worker {
     /// Cancels in-flight account work and drops cached Home data on sign-out.
     fn sign_out(&mut self) {
         self.cancel_sample_connections();
+        if let Some(task) = self.sample_prefetch.take() {
+            task.abort();
+        }
         self.spotify_restore_started = true;
         self.cancel_search();
         self.signed_in = false;
@@ -4614,6 +4670,43 @@ impl Worker {
             result,
         });
         self.start_album_type_lookup();
+    }
+
+    /// Looks up the playing song's connections and the pictures its view
+    /// shows first, one request at a time behind any open view's requests.
+    fn prefetch_sample_connections(&mut self, query: crate::sample_connections::Query) {
+        use crate::sample_connections::{Found, Priority, first_pictures};
+        if let Some(task) = self.sample_prefetch.take() {
+            task.abort();
+        }
+        let provider = Arc::clone(&self.sample_connections);
+        let events = self.events.clone();
+        let waker = self.waker.clone();
+        self.sample_prefetch = Some(tokio::spawn(async move {
+            // A song skipped within this time is never looked up.
+            tokio::time::sleep(SAMPLE_PREFETCH_DELAY).await;
+            let Ok(found) = provider.fetch(&query, Priority::Later).await else {
+                return;
+            };
+            let targets = match &found {
+                Found::Connections(connections) => first_pictures(&query, connections),
+                Found::Candidates(_) => Vec::new(),
+            };
+            let _ = events.send(Event::SamplePrefetched { query, found });
+            waker.wake();
+            for target in targets {
+                let Ok(picture) = provider.picture(&target, Priority::Later).await else {
+                    continue;
+                };
+                let _ = events.send(Event::SamplePicture {
+                    request: None,
+                    target,
+                    picture,
+                    answered: true,
+                });
+                waker.wake();
+            }
+        }));
     }
 
     fn cancel_sample_connections(&mut self) {
